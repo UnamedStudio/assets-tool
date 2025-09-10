@@ -30,6 +30,7 @@ from software_client import Client, RunCommands
 
 from assets_tool.utils import (
     XformCache,
+    copy_prim,
     from_usd_relative_transform,
     from_usd_transform,
     is_attr_authored_in_layer,
@@ -86,7 +87,7 @@ class FileExplorer:
     def __init__(
         self,
         container: int | str,
-        load_file_callbacks: Iterable[Callable[[Path], None]],
+        load_file_callbacks: list[Callable[[Path], None]],
     ) -> None:
         self.container = container
         self.on_load_file = load_file_callbacks
@@ -198,7 +199,7 @@ class Hierarchy:
     def __init__(
         self,
         container: int | str,
-        on_select_prim: Iterable[Callable[[Prim], None]],
+        on_select_prim: list[Callable[[Prim], None]],
         get_stage: Callable[[], Stage | None],
     ) -> None:
         self.container = container
@@ -259,24 +260,38 @@ class Properties:
     ) -> None:
         self.container = container
         self.get_stage = get_stage
+        self.selected_api_ui = dpg.add_text(parent=container)
+        self.selected_api_name: str | None = None
+        self.tree = Tree()
+        self.tree_ui = dpg.add_child_window(parent=container)
+
+    def select_schema(self, schema_name: str) -> Callable[[], None]:
+        def ret():
+            self.selected_api_name = schema_name
+            dpg.set_value(self.selected_api_ui, self.selected_api_name)
+
+        return ret
 
     def select_prim(self, prim: Prim | None):
-        dpg.delete_item(self.container, children_only=True)
+        self.selected_api_name = None
+        dpg.delete_item(self.tree_ui, children_only=True)
         if not prim:
             return
         type_name, property_names = self.type_properties(prim)
-        schema_ui = dpg.add_tree_node(label=type_name, parent=self.container)
+        node = self.tree.node(type_name, lambda: None, self.tree_ui)
         for property_name in property_names:
-            self.property_ui(prim, property_name, parent=schema_ui)
+            self.property_ui(prim, property_name, parent=node.children_ui)
             if property_name == "xformOpOrder":
                 xform_ops = prim.GetAttribute(property_name).Get()
                 if xform_ops:
                     for xform_op in xform_ops:
-                        self.property_ui(prim, str(xform_op), parent=schema_ui)
+                        self.property_ui(prim, str(xform_op), parent=node.children_ui)
         for schema_name, property_names in self.schema_properties(prim):
-            schema_ui = dpg.add_tree_node(label=schema_name, parent=self.container)
+            node = self.tree.node(
+                schema_name, self.select_schema(schema_name), self.tree_ui
+            )
             for property_name in property_names:
-                self.property_ui(prim, property_name, parent=schema_ui)
+                self.property_ui(prim, property_name, parent=node.children_ui)
 
     def property_ui(self, prim: Prim, name: str, parent: int | str):
         prop = prim.GetProperty(name)
@@ -645,29 +660,35 @@ class BlenderClient:
         self.tasks.put(run)
 
 
-class CreatePrim:
+class PrimUtil:
     def __init__(
         self,
         container: int | str,
         get_stage: Callable[[], Stage | None],
         get_selected_prim: Callable[[], Prim | None],
-        on_add_prim: Iterable[Callable[[Prim], None]],
+        on_add_prim: list[Callable[[Prim], None]],
+        on_delete_prim: list[Callable[[Prim], None]],
     ) -> None:
         self.container = container
         self.get_stage = get_stage
         self.get_selected_prim = get_selected_prim
         self.on_add_prim = on_add_prim
+        self.on_delete_prim = on_delete_prim
+        self.copied_prim: Prim | None = None
         with dpg.child_window(auto_resize_y=True, parent=container):
-            dpg.add_text("Create Prim")
+            dpg.add_text("Prim Util")
             self.name_ui = dpg.add_input_text(label="name", default_value="new_prim")
             self.mode_ui = dpg.add_combo(
-                ("child", "brother"), label="mode", default_value="child"
+                ("child", "brother"), label="mode", default_value="brother"
             )
-            dpg.add_button(label="create prim", callback=self.create_prim)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="create", callback=self.create_prim)
+                dpg.add_button(label="delete", callback=self.delete_prim)
+                dpg.add_button(label="copy", callback=self.copy_prim)
+                dpg.add_button(label="paste", callback=self.paste_prim)
 
-    def create_prim(self):
-        stage, selected_prim = self.get_stage(), self.get_selected_prim()
-        assert stage
+    def get_create_path(self) -> UsdPath:
+        selected_prim = self.get_selected_prim()
         if not selected_prim:
             path = UsdPath("/")
         else:
@@ -679,26 +700,15 @@ class CreatePrim:
                 case _:
                     raise Exception()
         path = path.AppendChild(dpg.get_value(self.name_ui))
+        return path
+
+    def create_prim(self):
+        stage = self.get_stage()
+        assert stage
+        path = self.get_create_path()
         prim = stage.DefinePrim(path)
         for callback in self.on_add_prim:
             callback(prim)
-
-
-class DeletePrim:
-    def __init__(
-        self,
-        container: int | str,
-        get_stage: Callable[[], Stage | None],
-        get_selected_prim: Callable[[], Prim | None],
-        on_delete_prim: Iterable[Callable[[Prim], None]],
-    ) -> None:
-        self.container = container
-        self.get_stage = get_stage
-        self.get_selected_prim = get_selected_prim
-        self.on_delete_prim = on_delete_prim
-        with dpg.child_window(auto_resize_y=True, parent=container):
-            dpg.add_text("Delete Prim")
-            dpg.add_button(label="delete prim", callback=self.delete_prim)
 
     def delete_prim(self):
         stage, selected_prim = self.get_stage(), self.get_selected_prim()
@@ -711,17 +721,31 @@ class DeletePrim:
         else:
             selected_prim.SetActive(False)
 
+    def copy_prim(self):
+        if prim := self.get_selected_prim():
+            self.copied_prim = prim
 
-class AddSchema:
+    def paste_prim(self):
+        if self.copied_prim:
+            stage, selected_prim = self.get_stage(), self.get_selected_prim()
+            assert stage and selected_prim
+            new_prim = copy_prim(stage, self.copied_prim, self.get_create_path(), True)
+            for callback in self.on_add_prim:
+                callback(new_prim)
+
+
+class SchemaUtil:
     def __init__(
         self,
         container: int | str,
         get_selected_prim: Callable[[], Prim | None],
-        on_add_schema: Iterable[Callable[[Prim], None]],
+        get_selected_api_name: Callable[[], str | None],
+        on_schema_change: list[Callable[[Prim], None]],
     ) -> None:
         self.container = container
+        self.get_selected_api_name = get_selected_api_name
         self.get_selected_prim = get_selected_prim
-        self.on_add_schema = on_add_schema
+        self.on_add_schema = on_schema_change
 
         type_types = UsdType.FindByName("UsdTyped").GetAllDerivedTypes()
         api_types = UsdType.FindByName("UsdAPISchemaBase").GetAllDerivedTypes()
@@ -735,32 +759,46 @@ class AddSchema:
                 api_names.append(SchemaRegistry.GetSchemaTypeName(type))
 
         with dpg.child_window(auto_resize_y=True, parent=container):
-            dpg.add_text("Add Schema")
-            self.types_ui = dpg.add_combo(type_names, label="type")
-            dpg.add_button(label="set type", callback=self.set_type)
-            self.apis_ui = dpg.add_combo(api_names, label="api")
-            self.instance_name_ui = dpg.add_input_text(
-                label="instance name", show=False
-            )
-            dpg.add_button(label="add api", callback=self.add_api)
+            dpg.add_text("Schema Util")
+            with dpg.tree_node(label="type", default_open=True):
+                self.select_type_ui = dpg.add_combo(type_names, label="type")
+                dpg.add_button(label="set type", callback=self.set_type)
+            with dpg.tree_node(label="api", default_open=True):
+                self.select_api_ui = dpg.add_combo(api_names, label="api")
+                self.instance_name_ui = dpg.add_input_text(
+                    label="instance name", show=False
+                )
+                with dpg.group(horizontal=True):
+                    dpg.add_button(label="add api", callback=self.add_api)
+                    dpg.add_button(label="remove api", callback=self.remove_api)
 
             def select_api(sender, app_data, user_data):
                 is_multi = SchemaRegistry.IsMultipleApplyAPISchema(app_data)
                 dpg.configure_item(self.instance_name_ui, show=is_multi)
 
-            dpg.configure_item(self.apis_ui, callback=select_api)
+            dpg.configure_item(self.select_api_ui, callback=select_api)
+
+    def remove_api(self):
+        if prim := self.get_selected_prim():
+            if api_name := self.get_selected_api_name():
+                api = SchemaRegistry.GetTypeFromSchemaTypeName(api_name)
+                prim.RemoveAPI(schemaType=api)
+                for callback in self.on_add_schema:
+                    callback(prim)
 
     def set_type(self):
         selected_prim = self.get_selected_prim()
         assert selected_prim
-        selected_prim.SetTypeName(dpg.get_value(self.types_ui))
+        selected_prim.SetTypeName(dpg.get_value(self.select_type_ui))
         for callback in self.on_add_schema:
             callback(selected_prim)
 
     def add_api(self):
         selected_prim = self.get_selected_prim()
         assert selected_prim
-        type = SchemaRegistry.GetTypeFromSchemaTypeName(dpg.get_value(self.apis_ui))
+        type = SchemaRegistry.GetTypeFromSchemaTypeName(
+            dpg.get_value(self.select_api_ui)
+        )
         is_multi = SchemaRegistry.IsMultipleApplyAPISchema(type)
         if not is_multi:
             selected_prim.ApplyAPI(type)
@@ -822,16 +860,16 @@ class App:
         )
         self.hierarchy = Hierarchy(
             self.ui.heirarchy,
-            (self.properties.select_prim,),
+            [self.properties.select_prim],
             lambda: self.file_explorer.stage,
         )
         self.file_explorer = FileExplorer(
             self.ui.file_explorer,
-            (
+            [
                 self.hierarchy.load_file,
                 lambda _: self.properties.select_prim(None),
                 lambda _: self.blender_client.unsync(),
-            ),
+            ],
         )
         self.blender_client = BlenderClient(
             self.ui.operators,
@@ -841,22 +879,18 @@ class App:
             self.ui.on_tick,
             self.ui.on_end,
         )
-        self.create_prim = CreatePrim(
+        self.prim_util = PrimUtil(
             self.ui.operators,
             lambda: self.file_explorer.stage,
             lambda: self.hierarchy.selected_prim,
-            (self.hierarchy.add_prim,),
+            [self.hierarchy.add_prim],
+            [self.hierarchy.remove_prim, lambda _: self.properties.select_prim(None)],
         )
-        self.delete_prim = DeletePrim(
-            self.ui.operators,
-            lambda: self.file_explorer.stage,
-            lambda: self.hierarchy.selected_prim,
-            (self.hierarchy.remove_prim, lambda _: self.properties.select_prim(None)),
-        )
-        self.add_schema = AddSchema(
+        self.schema_util = SchemaUtil(
             self.ui.operators,
             lambda: self.hierarchy.selected_prim,
-            (self.properties.select_prim,),
+            lambda: self.properties.selected_api_name,
+            [self.properties.select_prim],
         )
         self.file_explorer.load_path(Path(".").resolve())()
 

@@ -6,6 +6,7 @@ from numpy.typing import NDArray
 from pxr.Gf import Matrix4d, Quatd, Quatf, Quath, Transform
 from pxr.Sdf import Layer
 
+from assets_tool import Relationship, Stage, UsdPath
 
 def from_usd_quaternion(usd: Quatd) -> NDArray[float]:
     img = usd.GetImaginary()
@@ -79,3 +80,28 @@ def unique_path(path: Path):
         if not unique_path.exists():
             return unique_path
         count += 1
+
+def copy_prim(
+    stage: Stage, source_prim: Prim, dest_path: UsdPath, recursive: bool
+) -> Prim:
+    dst_prim = stage.DefinePrim(dest_path, source_prim.GetTypeName())
+
+    for prop in source_prim.GetProperties():
+        name = prop.GetName()
+        if isinstance(prop, Attribute):
+            if prop.HasAuthoredValue():
+                dst_attr = dst_prim.CreateAttribute(name, typeName=prop.GetTypeName())
+                dst_attr.Set(prop.Get())
+        elif isinstance(prop, Relationship):
+            if prop.HasAuthoredTargets():
+                dst_attr = dst_prim.CreateRelationship(name)
+                dst_attr.SetTargets(prop.GetTargets())
+
+    for k, v in source_prim.GetAllAuthoredMetadata().items():
+        dst_prim.SetMetadata(k, v)
+
+    if recursive:
+        for child in source_prim.GetChildren():
+            child_dst_path = dest_path.AppendChild(child.GetName())
+            copy_prim(stage, child, child_dst_path, recursive)
+    return dst_prim
