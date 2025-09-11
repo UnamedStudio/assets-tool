@@ -24,7 +24,7 @@ from pxr.Usd import (
 )
 from pxr.Sdf import Layer, Path as UsdPath
 from pxr.Gf import Vec3d, Quatd
-from pxr.UsdGeom import Mesh, Xformable
+from pxr.UsdGeom import Mesh, Xformable, PrimvarsAPI, Primvar
 from pxr import Vt
 from pxr.Tf import Type as UsdType
 
@@ -600,6 +600,16 @@ class Properties:
 
             schema_attributes.append((schema_name, prop_names))
 
+        attr_names = []
+        primvar_api = PrimvarsAPI(prim)
+        primvars = primvar_api.GetPrimvars()
+        print(primvars)
+        for primvar in primvars:
+            attr_name = primvar.GetAttr().GetName()
+            attr_names.append(attr_name)
+        if len(attr_names) > 0:
+            schema_attributes.append(("PrimvarAPI", attr_names))
+
         return schema_attributes
 
     def type_properties(self, prim: Prim) -> tuple[str, Iterable[str]]:
@@ -736,6 +746,9 @@ class BlenderClient:
                 mesh = Mesh(prim)
                 mesh.GetPointsAttr().Set(Vt.Vec3fArray.FromNumpy(positions))
                 mesh.GetFaceVertexIndicesAttr().Set(Vt.IntArray.FromNumpy(indices))
+                mesh.GetFaceVertexCountsAttr().Set(
+                    Vt.IntArray.FromNumpy(numpy.full(len(indices) // 3, 3))
+                )
 
         self.tasks.put(run)
 
