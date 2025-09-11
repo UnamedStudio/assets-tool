@@ -10,7 +10,7 @@ dependencies = [
     "numpy>=2.3.2",
     "software-client @ git+https://github.com/UnamedStudio/software-server.git@main#subdirectory=client",
 ]
-requires-python = "==3.11.*"
+requires-python = "==3.12.*"
 readme = "README.md"
 license = { text = "MIT" }
 

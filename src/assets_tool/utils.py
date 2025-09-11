@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from pxr.Usd import Prim, Attribute
 from pxr.UsdGeom import XformCache, XformOp
@@ -105,3 +106,18 @@ def copy_prim(
             child_dst_path = dest_path.AppendChild(child.GetName())
             copy_prim(stage, child, child_dst_path, recursive)
     return dst_prim
+
+
+def relativize_sublayers(layer: Layer):
+    root = Path(layer.realPath)
+    updated_paths = []
+
+    for sublayer in layer.subLayerPaths:
+        sublayer_path = Path(sublayer).resolve()
+        relative = Path(os.path.relpath(sublayer_path, start=root.parent))
+        updated_paths.append(relative.as_posix())
+
+    layer.subLayerPaths.clear()
+    for updated_path in updated_paths:
+        layer.subLayerPaths.append(updated_path)
+    layer.Save()

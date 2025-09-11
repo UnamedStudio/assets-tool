@@ -1,8 +1,11 @@
 from collections.abc import Callable, Iterable
+from copy import deepcopy
 from gc import enable
+import json
 from math import e
 from multiprocessing.shared_memory import SharedMemory
 from os import rename
+import os
 from pathlib import Path
 from queue import Queue
 from typing import Any
@@ -37,6 +40,7 @@ from assets_tool.utils import (
     is_prim_authored_in_layer,
     quat,
     is_attr_blocked,
+    relativize_sublayers,
     unique_path,
 )
 
@@ -93,28 +97,27 @@ class FileExplorer:
         self.on_load_file = load_file_callbacks
         self.stage: Stage | None = None
         self.xform_cache: XformCache | None = None
+        self.old_metadata: dict | None = None
 
         self.opened_file_path: Path | None = None
         self.opened_file_ui = dpg.add_text(parent=self.container)
 
-        def on_edit_mode_ui(sender, app_data, user_data):
-            match app_data:
-                case "modify":
-                    dpg.configure_item(self.operation_name_ui, show=False)
-                case "override" | "override replace":
-                    dpg.configure_item(self.operation_name_ui, show=True)
-
         self.edit_mode_ui = dpg.add_combo(
-            ["modify", "override", "override replace"],
+            ["update", "override", "override replace"],
             label="edit mode",
-            default_value="override",
-            callback=on_edit_mode_ui,
+            default_value="override replace",
+            callback=self.update_operation_name_ui,
             parent=self.container,
         )
         self.operation_name_ui = dpg.add_input_text(
-            label="operation name", default_value="test", parent=self.container
+            label="operation name",
+            default_value="none",
+            parent=self.container,
         )
         dpg.add_button(label="save", callback=self.save, parent=self.container)
+        self.operation_stack_ui = dpg.add_tree_node(
+            label="operation stack", parent=self.container
+        )
         self.tree_ui = dpg.add_child_window(parent=self.container)
 
     def save(self):
@@ -131,24 +134,133 @@ class FileExplorer:
                         path = self.opened_file_path.with_name(
                             f"{stem}+{operation_name}.usda"
                         )
-                        path = unique_path(path)
+                        if path.exists():
+                            path.unlink(missing_ok=True)
                         root_layer.identifier = str(path)
+                        relativize_sublayers(root_layer)
                         reload = True
                     case "override replace":
-                        root_layer.subLayerPaths.clear()
+                        if self.old_metadata:
+                            old_metadata = self.old_metadata
+                        else:
+                            old_metadata = {
+                                "operation": "",
+                                "input": "",
+                                "output": "",
+                                "original_name": stem,
+                            }
+                        original_name = old_metadata["original_name"]
                         path = self.opened_file_path.with_stem(
-                            f"{stem}-{operation_name}"
+                            f"{original_name}-{operation_name}"
                         )
-                        path = unique_path(path)
+                        old_stage = Stage.Open(str(self.opened_file_path))
+                        old_root_layer = old_stage.GetRootLayer()
+                        custom_layer_data = old_root_layer.customLayerData
+                        metadata = deepcopy(old_metadata)
+                        metadata["output"] = Path(
+                            os.path.relpath(
+                                str(self.opened_file_path.resolve()),
+                                str(path.parent.resolve()),
+                            )
+                        ).as_posix()
+                        custom_layer_data["assets_tool:operation"] = metadata
+                        old_root_layer.customLayerData = custom_layer_data
+                        old_stage.GetRootLayer().Save()
+                        del old_stage
+
+                        custom_layer_data = root_layer.customLayerData
+                        metadata = deepcopy(old_metadata)
+                        metadata["input"] = os.path.relpath(
+                            str(path.resolve()),
+                            str(self.opened_file_path.parent.resolve()),
+                        )
+                        metadata["operation"] = operation_name
+                        custom_layer_data["assets_tool:operation"] = metadata
+                        root_layer.customLayerData = custom_layer_data
+                        root_layer.subLayerPaths.clear()
+
+                        if path.exists():
+                            path.unlink(missing_ok=True)
                         self.opened_file_path.rename(path)
                         root_layer.subLayerPaths.append(str(path))
-                        self.stage.GetRootLayer().identifier = str(
-                            self.opened_file_path
-                        )
+                        root_layer.identifier = str(self.opened_file_path)
+                        relativize_sublayers(root_layer)
                         reload = True
             self.stage.Save()
             if reload:
                 self.load_path(self.opened_file_path.parent)()
+                self.update_operation_stack_ui()
+
+    def update_operation_name_ui(self):
+        match dpg.get_value(self.edit_mode_ui):
+            case "update":
+                show = False
+            case "override" | "override replace":
+                show = True
+            case _:
+                raise Exception()
+        dpg.configure_item(self.operation_name_ui, show=show)
+
+    def update_operation_stack_ui(self):
+        dpg.delete_item(self.operation_stack_ui, children_only=True)
+        assert self.opened_file_path
+        stage = Stage.Open(str(self.opened_file_path))
+        metadata = stage.GetRootLayer().customLayerData.get("assets_tool:operation")
+        if not metadata:
+            return
+        inputs = []
+        metadata_iter = metadata
+        while True:
+            if input := metadata_iter["input"]:
+                path = self.opened_file_path.parent / Path(input)
+                stage = Stage.Open(str(path))
+                metadata_iter = stage.GetRootLayer().customLayerData[
+                    "assets_tool:operation"
+                ]
+                inputs.append((path, metadata_iter))
+            else:
+                break
+
+        outputs = []
+        metadata_iter = metadata
+        while True:
+            if input := metadata_iter["output"]:
+                path = self.opened_file_path.parent / Path(input)
+                stage = Stage.Open(str(path))
+                metadata_iter = stage.GetRootLayer().customLayerData[
+                    "assets_tool:operation"
+                ]
+                outputs.append((path, metadata_iter))
+            else:
+                break
+
+        for path, metadata_iter in reversed(inputs):
+            operation_name = metadata_iter["operation"]
+            if not operation_name:
+                operation_name = "__origin__"
+            with dpg.group(horizontal=True, parent=self.operation_stack_ui):
+                dpg.add_text(" ")
+                dpg.add_button(
+                    label=operation_name,
+                    callback=self.load_path(path),
+                )
+
+        operation_name = metadata["operation"]
+        if not operation_name:
+            operation_name = "__origin__"
+        with dpg.group(horizontal=True, parent=self.operation_stack_ui):
+            dpg.add_text(">")
+            dpg.add_button(label=operation_name)
+
+        for path, metadata_iter in outputs:
+            operation_name = metadata_iter["operation"]
+            with dpg.group(horizontal=True, parent=self.operation_stack_ui):
+                dpg.add_text(" ")
+                dpg.add_button(label=operation_name, callback=self.load_path(path))
+
+    def reload_file(self):
+        if self.opened_file_path:
+            self.load_path(self.opened_file_path)
 
     def load_path(
         self,
@@ -172,10 +284,21 @@ class FileExplorer:
                 self.opened_file_path = path
                 dpg.set_value(self.opened_file_ui, str(path))
                 self.stage = None
+                self.old_metadata = None
+                dpg.delete_item(self.operation_stack_ui, children_only=True)
+                self.update_operation_stack_ui()
                 match path.suffix:
                     case ".usd" | ".usda" | ".usdc":
+                        old_stage = Stage.Open(str(self.opened_file_path))
+                        self.old_metadata = (
+                            old_stage.GetRootLayer().customLayerData.get(
+                                "assets_tool:operation"
+                            )
+                        )
+                        del old_stage
+                        self.update_operation_name_ui()
                         match dpg.get_value(self.edit_mode_ui):
-                            case "modify":
+                            case "update":
                                 self.stage = Stage.Open(str(path))
                             case "override" | "override replace":
                                 root_layer = Layer.CreateAnonymous()
@@ -211,7 +334,7 @@ class Hierarchy:
         self.tree_ui = dpg.add_child_window(parent=self.container)
         self.prim2node = dict[Prim, Tree.Node]()
 
-    def load_file(self, path: Path):
+    def load_stage(self):
         self.prim2node.clear()
         dpg.delete_item(self.tree_ui, children_only=True)
         self.selected_prim = None
@@ -808,6 +931,35 @@ class SchemaUtil:
         for callback in self.on_add_schema:
             callback(selected_prim)
 
+class LayerUtil:
+    def __init__(
+        self,
+        container: int | str,
+        get_stage: Callable[[], Stage | None],
+        on_clear: list[Callable[[], None]],
+    ) -> None:
+        self.container = container
+        self.get_stage = get_stage
+        self.on_clear = on_clear
+        with dpg.child_window(auto_resize_y=True, parent=self.container):
+            dpg.add_text("Layer Util")
+            dpg.add_button(label="clear", callback=self.clear)
+
+    def clear(self):
+        if stage := self.get_stage():
+            root_layer = stage.GetRootLayer()
+            operation_metadata = root_layer.customLayerData.get("assets_tool:operation")
+            sublayers = list(root_layer.subLayerPaths)  # type: ignore
+            root_layer.Clear()
+            if operation_metadata:
+                custom_layer_data = root_layer.customLayerData
+                custom_layer_data["assets_tool:operation"] = operation_metadata
+                root_layer.customLayerData = custom_layer_data
+            for sublayer in sublayers:
+                root_layer.subLayerPaths.append(sublayer)
+            for callback in self.on_clear:
+                callback()
+
 
 class UI:
     def __init__(self):
@@ -866,7 +1018,7 @@ class App:
         self.file_explorer = FileExplorer(
             self.ui.file_explorer,
             [
-                self.hierarchy.load_file,
+                lambda _: self.hierarchy.load_stage(),
                 lambda _: self.properties.select_prim(None),
                 lambda _: self.blender_client.unsync(),
             ],
@@ -891,6 +1043,11 @@ class App:
             lambda: self.hierarchy.selected_prim,
             lambda: self.properties.selected_api_name,
             [self.properties.select_prim],
+        )
+        self.layer_util = LayerUtil(
+            self.ui.operators,
+            lambda: self.file_explorer.stage,
+            [self.hierarchy.load_stage],
         )
         self.file_explorer.load_path(Path(".").resolve())()
 
