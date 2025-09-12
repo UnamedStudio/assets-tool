@@ -50,23 +50,24 @@ registry = SchemaRegistry()
 class Tree:
     class Node:
         is_open: bool
-        open_button: int | str
+        fold_button: int | str
+        select_button: int | str
         children_ui: int | str
         root_ui: int | str
 
-    def __init__(self, open_label: str = "+", close_label="-") -> None:
-        self.open_label = open_label
-        self.close_label = close_label
+    def __init__(self, unfold_label: str = "+", fold_label="-") -> None:
+        self.open_label = unfold_label
+        self.close_label = fold_label
 
     def node(self, label: str, callback: Callable[[], None], parent: int | str) -> Node:
         node = self.Node()
         node.is_open = False
         with dpg.group(parent=parent) as root_ui:
             with dpg.group(horizontal=True):
-                node.open_button = dpg.add_button(
+                node.fold_button = dpg.add_button(
                     label=self.open_label, callback=self.toggle_open(node)
                 )
-                dpg.add_button(label=label, callback=callback)
+                node.select_button = dpg.add_button(label=label, callback=callback)
             node.children_ui = dpg.add_child_window(
                 parent=parent, show=False, auto_resize_y=True
             )
@@ -78,11 +79,11 @@ class Tree:
             if node.is_open:
                 node.is_open = False
                 dpg.configure_item(node.children_ui, show=False)
-                dpg.configure_item(node.open_button, label=self.open_label)
+                dpg.configure_item(node.fold_button, label=self.open_label)
             else:
                 node.is_open = True
                 dpg.configure_item(node.children_ui, show=True)
-                dpg.configure_item(node.open_button, label=self.close_label)
+                dpg.configure_item(node.fold_button, label=self.close_label)
 
         return ret
 
@@ -92,15 +93,19 @@ class FileExplorer:
         self,
         container: int | str,
         load_file_callbacks: list[Callable[[Path], None]],
+        opened_theme: int | str,
     ) -> None:
         self.container = container
         self.on_load_file = load_file_callbacks
+        self.opened_theme = opened_theme
         self.stage: Stage | None = None
         self.xform_cache: XformCache | None = None
         self.old_metadata: dict | None = None
 
         self.opened_file_path: Path | None = None
+        self.opened_directory_path: Path | None = None
         self.opened_file_ui = dpg.add_text(parent=self.container)
+        self.path2button = dict[Path, int | str]()
 
         self.edit_mode_ui = dpg.add_combo(
             ["update", "override", "override replace"],
@@ -262,12 +267,30 @@ class FileExplorer:
         if self.opened_file_path:
             self.load_path(self.opened_file_path)
 
+    def update_opened_file_ui(self):
+        if self.opened_file_path:
+            assert self.opened_directory_path
+            for path, button in self.path2button.items():
+                if path == self.opened_file_path:
+                    dpg.bind_item_theme(button, self.opened_theme)
+                else:
+                    dpg.bind_item_theme(button, 0)
+            dpg.set_value(
+                self.opened_file_ui,
+                os.path.relpath(
+                    str(self.opened_file_path.resolve()),
+                    str(self.opened_directory_path.resolve()),
+                ),
+            )
+
     def load_path(
         self,
         path: Path,
     ):
         def ret():
             if path.is_dir():
+                self.opened_directory_path = path
+                self.path2button.clear()
                 dpg.delete_item(self.tree_ui, children_only=True)
                 dpg.add_button(
                     label="..",
@@ -275,14 +298,14 @@ class FileExplorer:
                     parent=self.tree_ui,
                 )
                 for child in sorted(path.iterdir()):
-                    dpg.add_button(
+                    button = dpg.add_button(
                         label=child.name,
                         callback=self.load_path(child),
                         parent=self.tree_ui,
                     )
+                    self.path2button[child] = button
             elif path.is_file():
                 self.opened_file_path = path
-                dpg.set_value(self.opened_file_ui, str(path))
                 self.stage = None
                 self.old_metadata = None
                 dpg.delete_item(self.operation_stack_ui, children_only=True)
@@ -314,6 +337,7 @@ class FileExplorer:
                     callback(path)
             else:
                 raise Exception()
+            self.update_opened_file_ui()
 
         return ret
 
@@ -324,10 +348,12 @@ class Hierarchy:
         container: int | str,
         on_select_prim: list[Callable[[Prim], None]],
         get_stage: Callable[[], Stage | None],
+        selected_theme: int | str,
     ) -> None:
         self.container = container
         self.on_select_prim = on_select_prim
         self.get_stage = get_stage
+        self.selected_theme = selected_theme
         self.tree = Tree()
         self.selected_prim: Prim | None = None
         self.selected_prim_ui = dpg.add_text(parent=self.container)
@@ -369,8 +395,12 @@ class Hierarchy:
         def ret():
             stage = self.get_stage()
             assert stage
+            if self.selected_prim:
+                dpg.bind_item_theme(self.prim2node[self.selected_prim].select_button, 0)
             self.selected_prim = prim
-            dpg.set_value(self.selected_prim_ui, str(prim.GetPath()))
+            dpg.bind_item_theme(
+                self.prim2node[self.selected_prim].select_button, self.selected_theme
+            )
             for callback in self.on_select_prim:
                 callback(prim)
 
@@ -379,7 +409,10 @@ class Hierarchy:
 
 class Properties:
     def __init__(
-        self, container: int | str, get_stage: Callable[[], Stage | None]
+        self,
+        container: int | str,
+        get_stage: Callable[[], Stage | None],
+        selected_theme: int | str,
     ) -> None:
         self.container = container
         self.get_stage = get_stage
@@ -387,16 +420,27 @@ class Properties:
         self.selected_api_name: str | None = None
         self.tree = Tree()
         self.tree_ui = dpg.add_child_window(parent=container)
+        self.selected_theme = selected_theme
+        self.api_name2node = dict[str, Tree.Node]()
 
     def select_schema(self, schema_name: str) -> Callable[[], None]:
         def ret():
+            if self.selected_api_name:
+                dpg.bind_item_theme(
+                    self.api_name2node[self.selected_api_name].select_button, 0
+                )
             self.selected_api_name = schema_name
+            dpg.bind_item_theme(
+                self.api_name2node[self.selected_api_name].select_button,
+                self.selected_theme,
+            )
             dpg.set_value(self.selected_api_ui, self.selected_api_name)
 
         return ret
 
     def select_prim(self, prim: Prim | None):
         self.selected_api_name = None
+        self.api_name2node.clear()
         dpg.delete_item(self.tree_ui, children_only=True)
         if not prim:
             return
@@ -409,10 +453,9 @@ class Properties:
                 if xform_ops:
                     for xform_op in xform_ops:
                         self.property_ui(prim, str(xform_op), parent=node.children_ui)
-        for schema_name, property_names in self.schema_properties(prim):
-            node = self.tree.node(
-                schema_name, self.select_schema(schema_name), self.tree_ui
-            )
+        for api_name, property_names in self.api_properties(prim):
+            node = self.tree.node(api_name, self.select_schema(api_name), self.tree_ui)
+            self.api_name2node[api_name] = node
             for property_name in property_names:
                 self.property_ui(prim, property_name, parent=node.children_ui)
 
@@ -575,7 +618,7 @@ class Properties:
         else:
             raise Exception()
 
-    def schema_properties(self, prim: Prim) -> Iterable[tuple[str, Iterable[str]]]:
+    def api_properties(self, prim: Prim) -> Iterable[tuple[str, Iterable[str]]]:
         schema_attributes = []
 
         # 1. Get applied schemas
@@ -607,7 +650,6 @@ class Properties:
         attr_names = []
         primvar_api = PrimvarsAPI(prim)
         primvars = primvar_api.GetPrimvars()
-        print(primvars)
         for primvar in primvars:
             attr_name = primvar.GetAttr().GetName()
             attr_names.append(attr_name)
@@ -986,8 +1028,6 @@ class LayerUtil:
 
 class UI:
     def __init__(self):
-        dpg.create_context()
-
         self.root = dpg.add_window()
         with dpg.table(
             header_row=False,
@@ -1029,14 +1069,22 @@ class UI:
 
 class App:
     def __init__(self):
+        dpg.create_context()
+        with dpg.theme() as selected_theme:
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(
+                    dpg.mvThemeCol_Button, (120, 120, 0), category=dpg.mvThemeCat_Core
+                )
+        self.selected_theme = selected_theme
         self.ui = UI()
         self.properties = Properties(
-            self.ui.properties, lambda: self.file_explorer.stage
+            self.ui.properties, lambda: self.file_explorer.stage, self.selected_theme
         )
         self.hierarchy = Hierarchy(
             self.ui.heirarchy,
             [self.properties.select_prim],
             lambda: self.file_explorer.stage,
+            self.selected_theme,
         )
         self.file_explorer = FileExplorer(
             self.ui.file_explorer,
@@ -1045,6 +1093,7 @@ class App:
                 lambda _: self.properties.select_prim(None),
                 lambda _: self.blender_client.unsync(),
             ],
+            self.selected_theme,
         )
         self.blender_client = BlenderClient(
             self.ui.operators,
