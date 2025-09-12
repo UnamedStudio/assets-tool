@@ -753,6 +753,10 @@ class BlenderClient:
                 mesh.GetFaceVertexCountsAttr().Set(
                     Vt.IntArray.FromNumpy(numpy.full(len(indices) // 3, 3))
                 )
+                mesh.GetNormalsAttr().Block()
+                mesh.GetExtentAttr().Block()
+                for primvar in PrimvarsAPI(prim).GetPrimvars():
+                    primvar.GetAttr().Block()
 
         self.tasks.put(run)
 
@@ -922,9 +926,11 @@ class SchemaUtil:
         if prim := self.get_selected_prim():
             if api_name := self.get_selected_api_name():
                 api = SchemaRegistry.GetTypeFromSchemaTypeName(api_name)
-                prim.RemoveAPI(schemaType=api)
+                prim.RemoveAPI(api)
                 for callback in self.on_add_schema:
                     callback(prim)
+            elif api := dpg.get_value(self.select_api_ui):
+                prim.RemoveAPI(api)
 
     def set_type(self):
         selected_prim = self.get_selected_prim()

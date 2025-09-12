@@ -93,10 +93,14 @@ def copy_prim(
             if prop.HasAuthoredValue():
                 dst_attr = dst_prim.CreateAttribute(name, typeName=prop.GetTypeName())
                 dst_attr.Set(prop.Get())
+                for k, v in prop.GetAllAuthoredMetadata().items():
+                    dst_attr.SetMetadata(k, v)
         elif isinstance(prop, Relationship):
             if prop.HasAuthoredTargets():
                 dst_attr = dst_prim.CreateRelationship(name)
                 dst_attr.SetTargets(prop.GetTargets())
+                for k, v in prop.GetAllAuthoredMetadata().items():
+                    dst_attr.SetMetadata(k, v)
 
     for k, v in source_prim.GetAllAuthoredMetadata().items():
         dst_prim.SetMetadata(k, v)
