@@ -437,6 +437,7 @@ class Properties:
                 authored_ui = dpg.add_checkbox(default_value=is_authored, enabled=True)
                 blocked_ui = dpg.add_checkbox(default_value=is_blocked, enabled=False)
                 edit_ui = None
+                read_ui = None
                 if type_name == "token[]" or type_name == "token":
                     allowed_tokens = prop.GetMetadata("allowedTokens")
                     if type_name == "token":
@@ -464,10 +465,10 @@ class Properties:
 
                     elif type_name == "token[]":
                         if value:
-                            dpg.add_text(f"{value}")
+                            read_ui = dpg.add_text(f"{value}")
                 elif type_name.endswith("[]"):
                     if value:
-                        dpg.add_text(f"length: {len(value)}")
+                        read_ui = dpg.add_text(f"length: {len(value)}")
                 else:
                     match type_name:
                         case "bool":
@@ -543,6 +544,9 @@ class Properties:
                         dpg.configure_item(edit_ui, enabled=app_data)
                         if not app_data:
                             dpg.set_value(edit_ui, prop.Get())
+                    if read_ui:
+                        if not app_data:
+                            dpg.set_value(read_ui, prop.Get())
                     dpg.configure_item(blocked_ui, enabled=app_data)
 
                 dpg.configure_item(
