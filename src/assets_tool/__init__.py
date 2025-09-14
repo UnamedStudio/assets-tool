@@ -706,13 +706,20 @@ class BlenderClient:
         self.get_xform_cache = get_xform_cache
         with dpg.child_window(auto_resize_y=True, parent=self.container):
             dpg.add_text("Blender Client")
-            self.synced_ui = dpg.add_input_text(label="synced")
             self.port_input = dpg.add_input_int(label="port", default_value=8888)
             with dpg.group(horizontal=True):
                 self.connect_ui = dpg.add_checkbox(
                     label="connect", callback=self.toggle_connection
                 )
                 self.connected_ui = dpg.add_checkbox(enabled=False)
+            self.synced_ui = dpg.add_input_text(label="synced")
+            with dpg.group(horizontal=True):
+                self.if_sync_mesh_ui = dpg.add_checkbox(
+                    label="mesh", default_value=True
+                )
+                self.if_sync_xform_ui = dpg.add_checkbox(
+                    label="xform", default_value=True
+                )
             self.sync_ui = dpg.add_button(label="sync", callback=self.sync)
         self.synced: BlenderClient.Synced | None = None
         mut_on_tick.append(self.on_tick)
@@ -765,13 +772,19 @@ class BlenderClient:
                         array(mesh.GetPointsAttr().Get()),
                         array(mesh.GetFaceVertexIndicesAttr().Get()).reshape(-1, 3),
                         relative_path,
+                        dpg.get_value(self.if_sync_mesh_ui),
                     )
                 if prim.IsA(Xformable):  # type: ignore
                     translation, rotation, scale = from_usd_transform(
                         xform_cache.GetLocalTransformation(prim)[0]
                     )
                     software_client.set_xform(
-                        self.client, translation, rotation, scale, relative_path
+                        self.client,
+                        translation,
+                        rotation,
+                        scale,
+                        relative_path,
+                        dpg.get_value(self.if_sync_xform_ui),
                     )
 
     def sync_mesh(
