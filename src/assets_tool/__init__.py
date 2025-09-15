@@ -99,7 +99,6 @@ class FileExplorer:
         self.on_load_file = load_file_callbacks
         self.opened_theme = opened_theme
         self.stage: Stage | None = None
-        self.xform_cache: XformCache | None = None
         self.old_metadata: dict | None = None
 
         self.opened_file_path: Path | None = None
@@ -329,7 +328,6 @@ class FileExplorer:
                                 self.stage = Stage.Open(root_layer)
                             case _:
                                 raise Exception()
-                        self.xform_cache = XformCache()
 
                     case _:
                         raise Exception(f"unsupported file {path}")
@@ -684,7 +682,6 @@ class BlenderClient:
         container: int | str,
         get_selected_prim: Callable[[], Prim | None],
         get_stage: Callable[[], Stage | None],
-        get_xform_cache: Callable[[], XformCache | None],
         mut_on_tick: list[Callable[[], None]],
         mut_on_end: list[Callable[[], None]],
     ) -> None:
@@ -703,7 +700,6 @@ class BlenderClient:
         self.container = container
         self.get_selected_prim = get_selected_prim
         self.get_stage = get_stage
-        self.get_xform_cache = get_xform_cache
         with dpg.child_window(auto_resize_y=True, parent=self.container):
             dpg.add_text("Blender Client")
             self.synced_ui = dpg.add_input_text(label="synced")
@@ -748,7 +744,7 @@ class BlenderClient:
             dpg.set_value(self.sync_ui, selected_prim.GetPath())
             root = selected_prim.GetParent()
             stage = self.get_stage()
-            xform_cache = self.get_xform_cache()
+            xform_cache = XformCache()
             assert stage and xform_cache
             self.synced = self.Synced(root, stage)
             root_path = root.GetPath()
@@ -1099,7 +1095,6 @@ class App:
             self.ui.operators,
             lambda: self.hierarchy.selected_prim,
             lambda: self.file_explorer.stage,
-            lambda: self.file_explorer.xform_cache,
             self.ui.on_tick,
             self.ui.on_end,
         )
