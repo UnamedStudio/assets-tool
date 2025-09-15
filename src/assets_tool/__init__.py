@@ -669,7 +669,6 @@ class Properties:
 class BlenderClient:
     class SyncedMesh:
         mesh: Mesh
-        mesh_shared: tuple[SharedMemory, SharedMemory]
 
     class Synced:
         def __init__(self, root_prim: Prim, stage: Stage) -> None:
@@ -686,29 +685,37 @@ class BlenderClient:
         mut_on_end: list[Callable[[], None]],
     ) -> None:
         self.tasks = Queue[Callable[[], None]]()
-        self.run_commands = RunCommands(
-            (
-                software_client.SyncMesh(self.sync_mesh),
-                software_client.SyncXform(self.sync_xform),
-            )
-        )
         self.client = Client(
             lambda data: self.run_commands.run(data),
             (self.on_start,),
             (self.on_end,),
+        )
+        self.run_commands = RunCommands(
+            (
+                software_client.SyncMesh(self.sync_mesh),
+                software_client.SyncXform(self.sync_xform),
+            ),
+            self.client,
         )
         self.container = container
         self.get_selected_prim = get_selected_prim
         self.get_stage = get_stage
         with dpg.child_window(auto_resize_y=True, parent=self.container):
             dpg.add_text("Blender Client")
-            self.synced_ui = dpg.add_input_text(label="synced")
             self.port_input = dpg.add_input_int(label="port", default_value=8888)
             with dpg.group(horizontal=True):
                 self.connect_ui = dpg.add_checkbox(
                     label="connect", callback=self.toggle_connection
                 )
                 self.connected_ui = dpg.add_checkbox(enabled=False)
+            self.synced_ui = dpg.add_input_text(label="synced")
+            with dpg.group(horizontal=True):
+                self.if_sync_mesh_ui = dpg.add_checkbox(
+                    label="mesh", default_value=True
+                )
+                self.if_sync_xform_ui = dpg.add_checkbox(
+                    label="xform", default_value=True
+                )
             self.sync_ui = dpg.add_button(label="sync", callback=self.sync)
         self.synced: BlenderClient.Synced | None = None
         mut_on_tick.append(self.on_tick)
@@ -756,18 +763,24 @@ class BlenderClient:
                     self.synced.meshes[relative_path] = synced_mesh
                     face_vertex_counts = array(mesh.GetFaceVertexCountsAttr().Get())
                     assert numpy.all(face_vertex_counts == 3)
-                    synced_mesh.mesh_shared = software_client.create_mesh(
+                    software_client.create_mesh(
                         self.client,
                         array(mesh.GetPointsAttr().Get()),
                         array(mesh.GetFaceVertexIndicesAttr().Get()).reshape(-1, 3),
                         relative_path,
+                        dpg.get_value(self.if_sync_mesh_ui),
                     )
                 if prim.IsA(Xformable):  # type: ignore
                     translation, rotation, scale = from_usd_transform(
                         xform_cache.GetLocalTransformation(prim)[0]
                     )
                     software_client.set_xform(
-                        self.client, translation, rotation, scale, relative_path
+                        self.client,
+                        translation,
+                        rotation,
+                        scale,
+                        relative_path,
+                        dpg.get_value(self.if_sync_xform_ui),
                     )
 
     def sync_mesh(
