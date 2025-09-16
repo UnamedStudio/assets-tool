@@ -155,6 +155,26 @@ class FileExplorer:
                         path = self.opened_file_path.with_stem(
                             f"{original_name}-{operation_name}"
                         )
+                        if input := old_metadata["input"]:
+                            input_path = self.opened_file_path.parent / input
+                            input_stage = Stage.Open(str(input_path))
+                            input_root_layer = input_stage.GetRootLayer()
+                            input_custom_layer_data = input_root_layer.customLayerData
+                            input_metadata = input_custom_layer_data[
+                                "assets_tool:operation"
+                            ]
+                            input_metadata["output"] = Path(
+                                os.path.relpath(
+                                    str(path.resolve()),
+                                    str(input_path.parent.resolve()),
+                                )
+                            ).as_posix()
+                            input_custom_layer_data["assets_tool:operation"] = (
+                                input_metadata
+                            )
+                            input_root_layer.customLayerData = input_custom_layer_data
+                            input_root_layer.Save()
+                            del input_stage
                         old_stage = Stage.Open(str(self.opened_file_path))
                         old_root_layer = old_stage.GetRootLayer()
                         custom_layer_data = old_root_layer.customLayerData
