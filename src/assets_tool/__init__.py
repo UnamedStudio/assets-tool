@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 from queue import Queue
+from time import sleep
 from typing import Any
 import dearpygui.dearpygui as dpg
 
@@ -322,6 +323,10 @@ class FileExplorer:
                             case "override" | "override replace":
                                 root_layer = Layer.CreateAnonymous()
                                 root_layer.subLayerPaths.append(str(path))
+                                stage = Stage.Open(str(path))
+                                defaultPrim = stage.GetRootLayer().defaultPrim
+                                del stage
+                                root_layer.defaultPrim = defaultPrim
                                 self.stage = Stage.Open(root_layer)
                             case _:
                                 raise Exception()
@@ -918,6 +923,7 @@ class BlenderClient:
             assert stage and xform_cache
             self.synced = self.Synced(root, stage)
             root_path = root.GetPath()
+            command_count = 0
             for prim in PrimRange(selection.current):
                 in_selection = selection.if_filter(prim)
                 relative_path = Path(str(prim.GetPath().MakeRelativePath(root_path)))
@@ -934,6 +940,7 @@ class BlenderClient:
                         relative_path,
                         dpg.get_value(self.if_sync_mesh_ui),
                     )
+                    command_count += 4
                 if prim.IsA(Xformable):  # type: ignore
                     translation, rotation, scale = from_usd_transform(
                         xform_cache.GetLocalTransformation(prim)[0]
@@ -946,6 +953,10 @@ class BlenderClient:
                         relative_path,
                         in_selection and dpg.get_value(self.if_sync_xform_ui),
                     )
+                    command_count += 1
+                if command_count >= 20:
+                    sleep(0.1)
+                    command_count -= 20
 
     def sync_mesh(
         self,
@@ -1191,12 +1202,14 @@ class LayerUtil:
         if stage := self.get_stage():
             root_layer = stage.GetRootLayer()
             operation_metadata = root_layer.customLayerData.get("assets_tool:operation")
+            default_prim = root_layer.defaultPrim
             sublayers = list(root_layer.subLayerPaths)  # type: ignore
             root_layer.Clear()
             if operation_metadata:
                 custom_layer_data = root_layer.customLayerData
                 custom_layer_data["assets_tool:operation"] = operation_metadata
                 root_layer.customLayerData = custom_layer_data
+            root_layer.defaultPrim = default_prim
             for sublayer in sublayers:
                 root_layer.subLayerPaths.append(sublayer)
             for callback in self.on_clear:
