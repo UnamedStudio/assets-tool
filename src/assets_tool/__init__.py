@@ -1,10 +1,7 @@
+from __future__ import annotations
 from collections.abc import Callable, Iterable
 from copy import deepcopy
-from gc import enable
-import json
-from math import e
-from multiprocessing.shared_memory import SharedMemory
-from os import rename
+from dataclasses import dataclass
 import os
 from pathlib import Path
 from queue import Queue
@@ -344,16 +341,15 @@ class Hierarchy:
     def __init__(
         self,
         container: int | str,
-        on_select_prim: list[Callable[[Prim], None]],
+        select_prim: Callable[[Prim], None],
         get_stage: Callable[[], Stage | None],
         selected_theme: int | str,
     ) -> None:
         self.container = container
-        self.on_select_prim = on_select_prim
+        self.select_prim = select_prim
         self.get_stage = get_stage
         self.selected_theme = selected_theme
         self.tree = Tree()
-        self.selected_prim: Prim | None = None
         self.selected_prim_ui = dpg.add_text(parent=self.container)
         self.tree_ui = dpg.add_child_window(parent=self.container)
         self.prim2node = dict[Prim, Tree.Node]()
@@ -361,7 +357,6 @@ class Hierarchy:
     def load_stage(self):
         self.prim2node.clear()
         dpg.delete_item(self.tree_ui, children_only=True)
-        self.selected_prim = None
         if stage := self.get_stage():
             root_node = Tree.Node()
             root_node.children_ui = self.tree_ui
@@ -376,7 +371,7 @@ class Hierarchy:
     def add_prim_raw(self, prim: Prim, parent_ui: int | str):
         node = self.tree.node(
             prim.GetName(),
-            self.select_prim(prim),
+            lambda: self.select_prim(prim),
             parent_ui,
         )
         self.load_prim(prim, node)
@@ -388,22 +383,18 @@ class Hierarchy:
 
     def remove_prim(self, prim: Prim):
         dpg.delete_item(self.prim2node[prim].root_ui)
+        self.prim2node.pop(prim)
 
-    def select_prim(self, prim: Prim):
-        def ret():
-            stage = self.get_stage()
-            assert stage
-            if self.selected_prim:
-                dpg.bind_item_theme(self.prim2node[self.selected_prim].select_button, 0)
-            self.selected_prim = prim
+    def on_select_prim(self, prev: Prim | None, new: Prim | None):
+        if prev:
+            if node := self.prim2node.get(prev):
+                dpg.bind_item_theme(node.select_button, 0)
+        if new:
             dpg.bind_item_theme(
-                self.prim2node[self.selected_prim].select_button, self.selected_theme
+                self.prim2node[new].select_button,
+                self.selected_theme,
             )
-            for callback in self.on_select_prim:
-                callback(prim)
-
-        return ret
-
+        dpg.set_value(self.selected_prim_ui, str(new.GetPath()) if new else "")
 
 class Properties:
     def __init__(
@@ -665,6 +656,177 @@ class Properties:
             raise Exception(f"type {type_name} of prim {prim} unknown")
         return (type_name, prim_def.GetPropertyNames())
 
+class SelectionUtil:
+    @dataclass
+    class SelectInfo:
+        recursive: bool
+        exclusive: bool
+
+    @dataclass
+    class Selection:
+        selected: dict[Prim, SelectionUtil.SelectInfo]
+        current_info: SelectionUtil.SelectInfo
+        api_filter: list[str]
+        current: Prim | None = None
+        name_filter: str | None = None
+        type_filter: str | None = None
+
+        def iter(self) -> Iterable[Prim]:
+            def traverse_prim(prim: Prim) -> Iterable[Prim]:
+                if self.if_filter(prim):
+                    yield prim
+                if self.current_info.recursive:
+                    child: Prim
+                    for child in prim.GetChildren():
+                        yield from traverse_prim(child)
+
+            if self.current:
+                yield from traverse_prim(self.current)
+
+        def foreach(self, func: Callable[[Prim], bool]):
+            def traverse_prim(prim: Prim):
+                recursive = True
+                if self.if_filter(prim):
+                    recursive = func(prim)
+                if recursive and self.current_info.recursive:
+                    child: Prim
+                    for child in prim.GetChildren():
+                        yield from traverse_prim(child)
+
+            if self.current:
+                traverse_prim(self.current)
+
+        def if_filter(self, prim: Prim) -> bool:
+            if self.name_filter:
+                if prim.GetName() != self.name_filter:
+                    return False
+            if self.type_filter:
+                if not prim.IsA(self.type_filter):
+                    return False
+            for api in self.api_filter:
+                if not prim.HasAPI(api):
+                    return False
+            return True
+
+    def __init__(
+        self,
+        container: int | str,
+        selected_theme: int | str,
+        on_select: list[Callable[[Prim | None, Prim | None], None]],
+    ) -> None:
+        self.container = container
+        self.selection = self.Selection({}, self.SelectInfo(False, False), [])
+        self.selected_theme = selected_theme
+        self.on_select = on_select
+
+        type_types = UsdType.FindByName("UsdTyped").GetAllDerivedTypes()
+        api_types = UsdType.FindByName("UsdAPISchemaBase").GetAllDerivedTypes()
+        type_names: list[str] = []
+        api_names: list[str] = []
+        for type in type_types:
+            type_names.append(SchemaRegistry.GetSchemaTypeName(type))
+        for type in api_types:
+            api_names.append(SchemaRegistry.GetSchemaTypeName(type))
+        type_names = sorted(type_names)
+        api_names = sorted(api_names)
+        type_names.insert(0, "None")
+        api_names.insert(0, "None")
+
+        with dpg.child_window(auto_resize_y=True, parent=self.container):
+            dpg.add_text("Selection Util")
+            with dpg.tree_node(label="filters"):
+                self.name_filter_ui = dpg.add_input_text(label="name")
+
+                def on_type_filter_ui(sender, app_data, user_data):
+                    if app_data == "None":
+                        self.selection.type_filter = None
+                    else:
+                        self.selection.type_filter = app_data
+
+                self.type_filter_ui = dpg.add_combo(
+                    type_names, label="type", callback=on_type_filter_ui
+                )
+
+                def on_api_filter_ui(sender, app_data, user_data):
+                    if app_data == "None":
+                        self.selection.api_filter = []
+                    else:
+                        self.selection.api_filter = [app_data]
+
+                self.api_filter_ui = dpg.add_combo(
+                    api_names, label="api", callback=on_api_filter_ui
+                )
+            self.selection_ui = dpg.add_child_window(auto_resize_y=True)
+            with dpg.group(horizontal=True):
+
+                def on_recursive_ui(sender, app_data, user_data):
+                    self.selection.current_info.recursive = app_data
+
+                def on_exclusive_ui(sender, app_data, user_data):
+                    self.selection.current_info.exclusive = app_data
+
+                dpg.add_checkbox(
+                    label="recursive", default_value=False, callback=on_recursive_ui
+                )
+                dpg.add_checkbox(
+                    label="exclusive",
+                    default_value=False,
+                    callback=on_exclusive_ui,
+                    show=False,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="add", callback=self.add)
+                dpg.add_button(label="remove", callback=self.remove)
+                dpg.add_button(label="clear", callback=self.clear)
+
+    def add(self):
+        if self.selection.current:
+            self.selection.selected[self.selection.current] = deepcopy(
+                self.selection.current_info
+            )
+            self.update_selected_ui()
+
+    def remove(self):
+        if self.selection.current:
+            self.selection.selected.pop(self.selection.current, None)
+            self.update_selected_ui()
+
+    def clear(self):
+        self.selection.selected.clear()
+        self.select(None)
+        self.update_selected_ui()
+
+    def update_selected_ui(self):
+        dpg.delete_item(self.selection_ui, children_only=True)
+        for prim, info in self.selection.selected.items():
+            self.add_selected_ui(prim, info)
+
+    def add_selected_ui(self, prim: Prim, info: SelectInfo):
+        with dpg.group(horizontal=True, parent=self.selection_ui):
+            recursive_ui = dpg.add_checkbox(default_value=info.recursive)
+            selected_ui = dpg.add_button(
+                label=("^" if info.exclusive else "") + str(prim.GetPath()),
+                callback=lambda: self.select(prim),
+            )
+            dpg.bind_item_theme(
+                selected_ui,
+                self.selected_theme if prim == self.selection.current else 0,
+            )
+
+            def on_recursive_ui(sender, app_data, user_data):
+                info.recursive = app_data
+
+            dpg.configure_item(recursive_ui, callback=on_recursive_ui)
+
+    def select(self, prim: Prim | None):
+        prev = self.selection.current
+        if prev == prim:
+            prim = None
+        self.selection.current = prim
+        self.update_selected_ui()
+        for callback in self.on_select:
+            callback(prev, prim)
+
 
 class BlenderClient:
     class SyncedMesh:
@@ -679,7 +841,7 @@ class BlenderClient:
     def __init__(
         self,
         container: int | str,
-        get_selected_prim: Callable[[], Prim | None],
+        get_selection: Callable[[], SelectionUtil.Selection],
         get_stage: Callable[[], Stage | None],
         mut_on_tick: list[Callable[[], None]],
         mut_on_end: list[Callable[[], None]],
@@ -698,7 +860,7 @@ class BlenderClient:
             self.client,
         )
         self.container = container
-        self.get_selected_prim = get_selected_prim
+        self.get_selection = get_selection
         self.get_stage = get_stage
         with dpg.child_window(auto_resize_y=True, parent=self.container):
             dpg.add_text("Blender Client")
@@ -747,17 +909,19 @@ class BlenderClient:
 
     def sync(self):
         software_client.clear(self.client)
-        if selected_prim := self.get_selected_prim():
-            dpg.set_value(self.sync_ui, selected_prim.GetPath())
-            root = selected_prim.GetParent()
+        selection = self.get_selection()
+        if selection.current:
+            dpg.set_value(self.sync_ui, selection.current.GetPath())
+            root = selection.current.GetParent()
             stage = self.get_stage()
             xform_cache = XformCache()
             assert stage and xform_cache
             self.synced = self.Synced(root, stage)
             root_path = root.GetPath()
-            for prim in PrimRange(selected_prim):
+            for prim in PrimRange(selection.current):
+                in_selection = selection.if_filter(prim)
                 relative_path = Path(str(prim.GetPath().MakeRelativePath(root_path)))
-                if prim.IsA(Mesh):  # type: ignore
+                if in_selection and prim.IsA(Mesh):  # type: ignore
                     mesh = Mesh(prim)
                     synced_mesh = BlenderClient.SyncedMesh()
                     self.synced.meshes[relative_path] = synced_mesh
@@ -780,7 +944,7 @@ class BlenderClient:
                         rotation,
                         scale,
                         relative_path,
-                        dpg.get_value(self.if_sync_xform_ui),
+                        in_selection and dpg.get_value(self.if_sync_xform_ui),
                     )
 
     def sync_mesh(
@@ -860,13 +1024,13 @@ class PrimUtil:
         self,
         container: int | str,
         get_stage: Callable[[], Stage | None],
-        get_selected_prim: Callable[[], Prim | None],
+        get_selection: Callable[[], SelectionUtil.Selection],
         on_add_prim: list[Callable[[Prim], None]],
         on_delete_prim: list[Callable[[Prim], None]],
     ) -> None:
         self.container = container
         self.get_stage = get_stage
-        self.get_selected_prim = get_selected_prim
+        self.get_selection = get_selection
         self.on_add_prim = on_add_prim
         self.on_delete_prim = on_delete_prim
         self.copied_prim: Prim | None = None
@@ -882,16 +1046,15 @@ class PrimUtil:
                 dpg.add_button(label="copy", callback=self.copy_prim)
                 dpg.add_button(label="paste", callback=self.paste_prim)
 
-    def get_create_path(self) -> UsdPath:
-        selected_prim = self.get_selected_prim()
-        if not selected_prim:
+    def get_create_path(self, prim: Prim | None) -> UsdPath:
+        if not prim:
             path = UsdPath("/")
         else:
             match dpg.get_value(self.mode_ui):
                 case "child":
-                    path = selected_prim.GetPath()
+                    path = prim.GetPath()
                 case "brother":
-                    path = selected_prim.GetParent().GetPath()
+                    path = prim.GetParent().GetPath()
                 case _:
                     raise Exception()
         path = path.AppendChild(dpg.get_value(self.name_ui))
@@ -900,31 +1063,36 @@ class PrimUtil:
     def create_prim(self):
         stage = self.get_stage()
         assert stage
-        path = self.get_create_path()
-        prim = stage.DefinePrim(path)
-        for callback in self.on_add_prim:
-            callback(prim)
+        for prim in self.get_selection().iter():
+            path = self.get_create_path(prim)
+            prim = stage.DefinePrim(path)
+            for callback in self.on_add_prim:
+                callback(prim)
 
     def delete_prim(self):
-        stage, selected_prim = self.get_stage(), self.get_selected_prim()
-        assert stage and selected_prim
-        for callback in self.on_delete_prim:
-            callback(selected_prim)
-        path = selected_prim.GetPath()
-        if is_prim_authored_in_layer(selected_prim, stage.GetRootLayer()):
-            stage.RemovePrim(path)
-        else:
-            selected_prim.SetActive(False)
+        stage = self.get_stage()
+        assert stage
+        for prim in self.get_selection().iter():
+            for callback in self.on_delete_prim:
+                callback(prim)
+            path = prim.GetPath()
+            if is_prim_authored_in_layer(prim, stage.GetRootLayer()):
+                stage.RemovePrim(path)
+            else:
+                prim.SetActive(False)
 
     def copy_prim(self):
-        if prim := self.get_selected_prim():
+        if prim := self.get_selection().current:
             self.copied_prim = prim
 
     def paste_prim(self):
-        if self.copied_prim:
-            stage, selected_prim = self.get_stage(), self.get_selected_prim()
-            assert stage and selected_prim
-            new_prim = copy_prim(stage, self.copied_prim, self.get_create_path(), True)
+        current_prim = self.get_selection().current
+        if self.copied_prim and current_prim:
+            stage = self.get_stage()
+            assert stage
+            new_prim = copy_prim(
+                stage, self.copied_prim, self.get_create_path(current_prim), True
+            )
             for callback in self.on_add_prim:
                 callback(new_prim)
 
@@ -933,13 +1101,13 @@ class SchemaUtil:
     def __init__(
         self,
         container: int | str,
-        get_selected_prim: Callable[[], Prim | None],
+        get_selection: Callable[[], SelectionUtil.Selection],
         get_selected_api_name: Callable[[], str | None],
         on_schema_change: list[Callable[[Prim], None]],
     ) -> None:
         self.container = container
         self.get_selected_api_name = get_selected_api_name
-        self.get_selected_prim = get_selected_prim
+        self.get_selection = get_selection
         self.on_add_schema = on_schema_change
 
         type_types = UsdType.FindByName("UsdTyped").GetAllDerivedTypes()
@@ -952,6 +1120,8 @@ class SchemaUtil:
         for type in api_types:
             if SchemaRegistry.IsAppliedAPISchema(type):
                 api_names.append(SchemaRegistry.GetSchemaTypeName(type))
+        type_names = sorted(type_names)
+        api_names = sorted(api_names)
 
         with dpg.child_window(auto_resize_y=True, parent=container):
             dpg.add_text("Schema Util")
@@ -974,7 +1144,7 @@ class SchemaUtil:
             dpg.configure_item(self.select_api_ui, callback=select_api)
 
     def remove_api(self):
-        if prim := self.get_selected_prim():
+        for prim in self.get_selection().iter():
             if api_name := self.get_selected_api_name():
                 api = SchemaRegistry.GetTypeFromSchemaTypeName(api_name)
                 prim.RemoveAPI(api)
@@ -984,26 +1154,24 @@ class SchemaUtil:
                 prim.RemoveAPI(api)
 
     def set_type(self):
-        selected_prim = self.get_selected_prim()
-        assert selected_prim
-        selected_prim.SetTypeName(dpg.get_value(self.select_type_ui))
-        for callback in self.on_add_schema:
-            callback(selected_prim)
+        for prim in self.get_selection().iter():
+            prim.SetTypeName(dpg.get_value(self.select_type_ui))
+            for callback in self.on_add_schema:
+                callback(prim)
 
     def add_api(self):
-        selected_prim = self.get_selected_prim()
-        assert selected_prim
-        type = SchemaRegistry.GetTypeFromSchemaTypeName(
-            dpg.get_value(self.select_api_ui)
-        )
-        is_multi = SchemaRegistry.IsMultipleApplyAPISchema(type)
-        if not is_multi:
-            selected_prim.ApplyAPI(type)
-        else:
-            instance_name = dpg.get_value(self.instance_name_ui)
-            selected_prim.ApplyAPI(type, instance_name)
-        for callback in self.on_add_schema:
-            callback(selected_prim)
+        for prim in self.get_selection().iter():
+            type = SchemaRegistry.GetTypeFromSchemaTypeName(
+                dpg.get_value(self.select_api_ui)
+            )
+            is_multi = SchemaRegistry.IsMultipleApplyAPISchema(type)
+            if not is_multi:
+                prim.ApplyAPI(type)
+            else:
+                instance_name = dpg.get_value(self.instance_name_ui)
+                prim.ApplyAPI(type, instance_name)
+            for callback in self.on_add_schema:
+                callback(prim)
 
 class LayerUtil:
     def __init__(
@@ -1091,7 +1259,7 @@ class App:
         )
         self.hierarchy = Hierarchy(
             self.ui.heirarchy,
-            [self.properties.select_prim],
+            lambda prim: self.selection_util.select(prim),
             lambda: self.file_explorer.stage,
             self.selected_theme,
         )
@@ -1099,14 +1267,22 @@ class App:
             self.ui.file_explorer,
             [
                 lambda _: self.hierarchy.load_stage(),
-                lambda _: self.properties.select_prim(None),
+                lambda _: self.selection_util.clear(),
                 lambda _: self.blender_client.unsync(),
             ],
             self.selected_theme,
         )
+        self.selection_util = SelectionUtil(
+            self.ui.operators,
+            self.selected_theme,
+            [
+                self.hierarchy.on_select_prim,
+                lambda _, new: self.properties.select_prim(new),
+            ],
+        )
         self.blender_client = BlenderClient(
             self.ui.operators,
-            lambda: self.hierarchy.selected_prim,
+            lambda: self.selection_util.selection,
             lambda: self.file_explorer.stage,
             self.ui.on_tick,
             self.ui.on_end,
@@ -1114,13 +1290,13 @@ class App:
         self.prim_util = PrimUtil(
             self.ui.operators,
             lambda: self.file_explorer.stage,
-            lambda: self.hierarchy.selected_prim,
+            lambda: self.selection_util.selection,
             [self.hierarchy.add_prim],
             [self.hierarchy.remove_prim, lambda _: self.properties.select_prim(None)],
         )
         self.schema_util = SchemaUtil(
             self.ui.operators,
-            lambda: self.hierarchy.selected_prim,
+            lambda: self.selection_util.selection,
             lambda: self.properties.selected_api_name,
             [self.properties.select_prim],
         )
