@@ -4,7 +4,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 import os
 from pathlib import Path
-from queue import Queue
+from queue import PriorityQueue, Queue
 from time import sleep
 from typing import Any
 import dearpygui.dearpygui as dpg
@@ -90,7 +90,7 @@ class FileExplorer:
     def __init__(
         self,
         container: int | str,
-        load_file_callbacks: list[Callable[[Path], None]],
+        load_file_callbacks: list[Callable[[Path | None], None]],
         opened_theme: int | str,
     ) -> None:
         self.container = container
@@ -189,9 +189,11 @@ class FileExplorer:
                         relativize_sublayers(root_layer)
                         reload = True
             self.stage.Save()
+            del self.stage
             if reload:
                 self.load_path(self.opened_file_path.parent)()
-                self.update_operation_stack_ui()
+
+            self.load_path(None)()
 
     def update_operation_name_ui(self):
         match dpg.get_value(self.edit_mode_ui):
@@ -205,87 +207,95 @@ class FileExplorer:
 
     def update_operation_stack_ui(self):
         dpg.delete_item(self.operation_stack_ui, children_only=True)
-        assert self.opened_file_path
-        stage = Stage.Open(str(self.opened_file_path))
-        metadata = stage.GetRootLayer().customLayerData.get("assets_tool:operation")
-        if not metadata:
-            return
-        inputs = []
-        metadata_iter = metadata
-        while True:
-            if input := metadata_iter["input"]:
-                path = self.opened_file_path.parent / Path(input)
-                stage = Stage.Open(str(path))
-                metadata_iter = stage.GetRootLayer().customLayerData[
-                    "assets_tool:operation"
-                ]
-                inputs.append((path, metadata_iter))
-            else:
-                break
+        if self.opened_file_path:
+            stage = Stage.Open(str(self.opened_file_path))
+            metadata = stage.GetRootLayer().customLayerData.get("assets_tool:operation")
+            if not metadata:
+                return
+            inputs = []
+            metadata_iter = metadata
+            while True:
+                if input := metadata_iter["input"]:
+                    path = self.opened_file_path.parent / Path(input)
+                    stage = Stage.Open(str(path))
+                    metadata_iter = stage.GetRootLayer().customLayerData[
+                        "assets_tool:operation"
+                    ]
+                    inputs.append((path, metadata_iter))
+                else:
+                    break
 
-        outputs = []
-        metadata_iter = metadata
-        while True:
-            if input := metadata_iter["output"]:
-                path = self.opened_file_path.parent / Path(input)
-                stage = Stage.Open(str(path))
-                metadata_iter = stage.GetRootLayer().customLayerData[
-                    "assets_tool:operation"
-                ]
-                outputs.append((path, metadata_iter))
-            else:
-                break
+            outputs = []
+            metadata_iter = metadata
+            while True:
+                if input := metadata_iter["output"]:
+                    path = self.opened_file_path.parent / Path(input)
+                    stage = Stage.Open(str(path))
+                    metadata_iter = stage.GetRootLayer().customLayerData[
+                        "assets_tool:operation"
+                    ]
+                    outputs.append((path, metadata_iter))
+                else:
+                    break
 
-        for path, metadata_iter in reversed(inputs):
-            operation_name = metadata_iter["operation"]
+            for path, metadata_iter in reversed(inputs):
+                operation_name = metadata_iter["operation"]
+                if not operation_name:
+                    operation_name = "__origin__"
+                with dpg.group(horizontal=True, parent=self.operation_stack_ui):
+                    dpg.add_text(" ")
+                    dpg.add_button(
+                        label=operation_name,
+                        callback=self.load_path(path),
+                    )
+
+            operation_name = metadata["operation"]
             if not operation_name:
                 operation_name = "__origin__"
             with dpg.group(horizontal=True, parent=self.operation_stack_ui):
-                dpg.add_text(" ")
-                dpg.add_button(
-                    label=operation_name,
-                    callback=self.load_path(path),
-                )
+                dpg.add_text(">")
+                dpg.add_button(label=operation_name)
 
-        operation_name = metadata["operation"]
-        if not operation_name:
-            operation_name = "__origin__"
-        with dpg.group(horizontal=True, parent=self.operation_stack_ui):
-            dpg.add_text(">")
-            dpg.add_button(label=operation_name)
-
-        for path, metadata_iter in outputs:
-            operation_name = metadata_iter["operation"]
-            with dpg.group(horizontal=True, parent=self.operation_stack_ui):
-                dpg.add_text(" ")
-                dpg.add_button(label=operation_name, callback=self.load_path(path))
+            for path, metadata_iter in outputs:
+                operation_name = metadata_iter["operation"]
+                with dpg.group(horizontal=True, parent=self.operation_stack_ui):
+                    dpg.add_text(" ")
+                    dpg.add_button(label=operation_name, callback=self.load_path(path))
 
     def reload_file(self):
         if self.opened_file_path:
             self.load_path(self.opened_file_path)
 
     def update_opened_file_ui(self):
-        if self.opened_file_path:
-            assert self.opened_directory_path
-            for path, button in self.path2button.items():
-                if path == self.opened_file_path:
-                    dpg.bind_item_theme(button, self.opened_theme)
-                else:
-                    dpg.bind_item_theme(button, 0)
-            dpg.set_value(
-                self.opened_file_ui,
-                os.path.relpath(
-                    str(self.opened_file_path.resolve()),
-                    str(self.opened_directory_path.resolve()),
-                ),
+        assert self.opened_directory_path
+        for path, button in self.path2button.items():
+            if self.opened_file_path and path == self.opened_file_path:
+                dpg.bind_item_theme(button, self.opened_theme)
+            else:
+                dpg.bind_item_theme(button, 0)
+        dpg.set_value(
+            self.opened_file_ui,
+            os.path.relpath(
+                str(self.opened_file_path.resolve()),
+                str(self.opened_directory_path.resolve()),
             )
+            if self.opened_file_path
+            else "",
+        )
 
     def load_path(
         self,
-        path: Path,
+        path: Path | None,
     ):
         def ret():
-            if path.is_dir():
+            if not path:
+                self.opened_file_path = path
+                self.stage = None
+                self.old_metadata = None
+                self.update_operation_stack_ui()
+                for callback in self.on_load_file:
+                    callback(path)
+            elif path.is_dir():
                 self.opened_directory_path = path
                 self.path2button.clear()
                 dpg.delete_item(self.tree_ui, children_only=True)
@@ -305,7 +315,6 @@ class FileExplorer:
                 self.opened_file_path = path
                 self.stage = None
                 self.old_metadata = None
-                dpg.delete_item(self.operation_stack_ui, children_only=True)
                 self.update_operation_stack_ui()
                 match path.suffix:
                     case ".usd" | ".usda" | ".usdc":
