@@ -918,6 +918,8 @@ class BlenderClient:
 
     def unsync(self):
         if self.client.on:
+            del self.synced
+            self.synced = None
             software_client.clear(self.client)
             dpg.set_value(self.sync_ui, "")
 
