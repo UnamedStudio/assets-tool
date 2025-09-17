@@ -9,6 +9,7 @@ dependencies = [
     "types-usd>=24.5.2",
     "numpy>=2.3.2",
     "software-client @ git+https://github.com/UnamedStudio/software-server.git@main#subdirectory=client",
+    "screeninfo>=0.8.1",
 ]
 requires-python = "==3.12.*"
 readme = "README.md"
@@ -17,3 +18,19 @@ license = { text = "MIT" }
 
 [tool.pdm]
 distribution = true
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm.build]
+includes = ["src/assets_tool","src/assets_tool/assets/**/*.TTF"]
+
+[tool.setuptools.package-data]
+"my_package" = ["assets/*"]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]

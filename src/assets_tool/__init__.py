@@ -2,6 +2,8 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass
+from importlib.resources import as_file
+from math import ceil
 import os
 from pathlib import Path
 from queue import PriorityQueue, Queue
@@ -26,6 +28,7 @@ from pxr.UsdGeom import Mesh, Xformable, PrimvarsAPI, Primvar
 from pxr import Vt
 from pxr.Tf import Type as UsdType
 
+import screeninfo
 import software_client
 from software_client import Client, RunCommands
 
@@ -1291,6 +1294,17 @@ class UI:
 class App:
     def __init__(self):
         dpg.create_context()
+        from importlib.resources import files
+
+        font_path = files("assets_tool.assets").joinpath("fonts/ARIAL.TTF")
+        max_height = 600
+        for i in screeninfo.get_monitors():
+            if i.height > max_height:
+                max_height = i.height
+        with dpg.font_registry():
+            with as_file(font_path) as path:
+                default_font = dpg.add_font(str(path), ceil(max_height * 0.012))
+                dpg.bind_font(default_font)
         with dpg.theme() as selected_theme:
             with dpg.theme_component(dpg.mvButton):
                 dpg.add_theme_color(
