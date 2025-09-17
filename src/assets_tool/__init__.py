@@ -1292,7 +1292,7 @@ class UI:
 
 
 class App:
-    def __init__(self):
+    def __init__(self, font_scale: float = 1.0):
         dpg.create_context()
         from importlib.resources import files
 
@@ -1303,7 +1303,9 @@ class App:
                 max_height = i.height
         with dpg.font_registry():
             with as_file(font_path) as path:
-                default_font = dpg.add_font(str(path), ceil(max_height * 0.012))
+                default_font = dpg.add_font(
+                    str(path), ceil(max_height * 0.012 * font_scale)
+                )
                 dpg.bind_font(default_font)
         with dpg.theme() as selected_theme:
             with dpg.theme_component(dpg.mvButton):
