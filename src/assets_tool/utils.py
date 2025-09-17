@@ -7,7 +7,9 @@ from numpy.typing import NDArray
 from pxr.Gf import Matrix4d, Quatd, Quatf, Quath, Transform
 from pxr.Sdf import Layer
 
-from assets_tool import Relationship, Stage, UsdPath
+from assets_tool import Relationship, SchemaRegistry, Stage, UsdPath
+
+registry = SchemaRegistry()
 
 def from_usd_quaternion(usd: Quatd) -> NDArray[float]:
     img = usd.GetImaginary()
@@ -110,6 +112,24 @@ def copy_prim(
             child_dst_path = dest_path.AppendChild(child.GetName())
             copy_prim(stage, child, child_dst_path, recursive)
     return dst_prim
+
+def copy_api(source: Prim, dest: Prim, api: str):
+    prim_def = registry.FindAppliedAPIPrimDefinition(api)
+    for name in prim_def.GetPropertyNames():
+        prop = source.GetProperty(name)
+        name = prop.GetName()
+        if isinstance(prop, Attribute):
+            if prop.HasAuthoredValue():
+                dst_attr = dest.CreateAttribute(name, typeName=prop.GetTypeName())
+                dst_attr.Set(prop.Get())
+                for k, v in prop.GetAllAuthoredMetadata().items():
+                    dst_attr.SetMetadata(k, v)
+        elif isinstance(prop, Relationship):
+            if prop.HasAuthoredTargets():
+                dst_attr = dest.CreateRelationship(name)
+                dst_attr.SetTargets(prop.GetTargets())
+                for k, v in prop.GetAllAuthoredMetadata().items():
+                    dst_attr.SetMetadata(k, v)
 
 
 def relativize_sublayers(layer: Layer):

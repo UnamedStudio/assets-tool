@@ -45,7 +45,7 @@ from assets_tool.utils import (
     unique_path,
 )
 
-registry = SchemaRegistry()
+from assets_tool.utils import registry
 
 
 class Tree:
