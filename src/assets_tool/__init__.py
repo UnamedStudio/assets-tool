@@ -1108,7 +1108,7 @@ class PrimUtil:
     def create_prim(self):
         stage = self.get_stage()
         assert stage
-        for prim in self.get_selection().iter():
+        for prim in list(self.get_selection().iter()):
             path = self.get_create_path(prim)
             prim = stage.DefinePrim(path)
             for callback in self.on_add_prim:
@@ -1117,14 +1117,15 @@ class PrimUtil:
     def delete_prim(self):
         stage = self.get_stage()
         assert stage
-        for prim in self.get_selection().iter():
-            for callback in self.on_delete_prim:
-                callback(prim)
-            path = prim.GetPath()
-            if is_prim_authored_in_layer(prim, stage.GetRootLayer()):
-                stage.RemovePrim(path)
-            else:
-                prim.SetActive(False)
+        for prim in list(self.get_selection().iter()):
+            if prim:
+                for callback in self.on_delete_prim:
+                    callback(prim)
+                path = prim.GetPath()
+                if is_prim_authored_in_layer(prim, stage.GetRootLayer()):
+                    stage.RemovePrim(path)
+                else:
+                    prim.SetActive(False)
 
     def copy_prim(self):
         if prim := self.get_selection().current:
