@@ -24,7 +24,7 @@ from pxr.Usd import (
 )
 from pxr.Sdf import Layer, Path as UsdPath
 from pxr.Gf import Vec3d, Quatd
-from pxr.UsdGeom import Mesh, Xformable, PrimvarsAPI, Primvar
+from pxr.UsdGeom import Mesh, Xformable, PrimvarsAPI, Primvar, Cube
 from pxr import Vt
 from pxr.Tf import Type as UsdType
 
@@ -961,20 +961,27 @@ class BlenderClient:
             for prim in PrimRange(selection.current):
                 in_selection = selection.if_filter(prim)
                 relative_path = Path(str(prim.GetPath().MakeRelativePath(root_path)))
-                if in_selection and prim.IsA(Mesh):  # type: ignore
-                    mesh = Mesh(prim)
-                    synced_mesh = BlenderClient.SyncedMesh()
-                    self.synced.meshes[relative_path] = synced_mesh
-                    face_vertex_counts = array(mesh.GetFaceVertexCountsAttr().Get())
-                    assert numpy.all(face_vertex_counts == 3)
-                    software_client.create_mesh(
-                        self.client,
-                        array(mesh.GetPointsAttr().Get()),
-                        array(mesh.GetFaceVertexIndicesAttr().Get()).reshape(-1, 3),
-                        relative_path,
-                        dpg.get_value(self.if_sync_mesh_ui),
-                    )
-                    command_count += 4
+                if in_selection:
+                    if prim.IsA(Mesh):  # type: ignore
+                        mesh = Mesh(prim)
+                        synced_mesh = BlenderClient.SyncedMesh()
+                        self.synced.meshes[relative_path] = synced_mesh
+                        face_vertex_counts = array(mesh.GetFaceVertexCountsAttr().Get())
+                        assert numpy.all(face_vertex_counts == 3)
+                        software_client.create_mesh(
+                            self.client,
+                            array(mesh.GetPointsAttr().Get()),
+                            array(mesh.GetFaceVertexIndicesAttr().Get()).reshape(-1, 3),
+                            relative_path,
+                            dpg.get_value(self.if_sync_mesh_ui),
+                        )
+                        command_count += 4
+                    elif prim.IsA(Cube):  # type: ignore
+                        cube = Cube(prim)
+                        software_client.create_cube(
+                            self.client, cube.GetSizeAttr().Get(), relative_path
+                        )
+
                 if prim.IsA(Xformable):  # type: ignore
                     translation, rotation, scale = from_usd_transform(
                         xform_cache.GetLocalTransformation(prim)[0]
