@@ -24,7 +24,15 @@ from pxr.Usd import (
 )
 from pxr.Sdf import Layer, Path as UsdPath
 from pxr.Gf import Vec3d, Quatd
-from pxr.UsdGeom import Mesh, Xformable, PrimvarsAPI, Primvar, Cube
+from pxr.UsdGeom import (
+    Mesh,
+    Xformable,
+    PrimvarsAPI,
+    Primvar,
+    Cube,
+    GetStageUpAxis,
+    SetStageUpAxis,
+)
 from pxr import Vt
 from pxr.Tf import Type as UsdType
 
@@ -357,9 +365,11 @@ class FileExplorer:
                                 root_layer.subLayerPaths.append(str(path))
                                 stage = Stage.Open(str(path))
                                 defaultPrim = stage.GetRootLayer().defaultPrim
+                                up_axis = GetStageUpAxis(stage)
                                 del stage
                                 root_layer.defaultPrim = defaultPrim
                                 self.stage = Stage.Open(root_layer)
+                                SetStageUpAxis(self.stage, up_axis)
                             case _:
                                 raise Exception()
 
@@ -1246,6 +1256,7 @@ class LayerUtil:
             operation_metadata = root_layer.customLayerData.get("assets_tool:operation")
             default_prim = root_layer.defaultPrim
             sublayers = list(root_layer.subLayerPaths)  # type: ignore
+            up_axis = GetStageUpAxis(stage)
             root_layer.Clear()
             if operation_metadata:
                 custom_layer_data = root_layer.customLayerData
@@ -1254,6 +1265,7 @@ class LayerUtil:
             root_layer.defaultPrim = default_prim
             for sublayer in sublayers:
                 root_layer.subLayerPaths.append(sublayer)
+            SetStageUpAxis(stage, up_axis)
             for callback in self.on_clear:
                 callback()
 
