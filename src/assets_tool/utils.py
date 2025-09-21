@@ -84,6 +84,20 @@ def unique_path(path: Path):
             return unique_path
         count += 1
 
+def unique_usd_path(path: UsdPath, stage: Stage) -> UsdPath:
+    parent = path.GetParentPath()
+    name = path.name
+    count = 0
+    while True:
+        if count == 0:
+            unique_path = path
+        else:
+            unique_path = parent.AppendChild(f"{name}{count}")
+        if not stage.GetPrimAtPath(unique_path):
+            return unique_path
+        count += 1
+
+
 def copy_prim(
     stage: Stage, source_prim: Prim, dest_path: UsdPath, recursive: bool
 ) -> Prim:
