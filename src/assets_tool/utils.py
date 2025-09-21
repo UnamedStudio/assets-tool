@@ -145,3 +145,9 @@ def relativize_sublayers(layer: Layer):
     for updated_path in updated_paths:
         layer.subLayerPaths.append(updated_path)
     layer.Save()
+
+
+def none_str2none(value: str) -> str | None:
+    if not value or value == "None":
+        return None
+    return value
