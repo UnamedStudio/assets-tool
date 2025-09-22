@@ -30,6 +30,7 @@ from pxr.UsdGeom import (
     Xformable,
     PrimvarsAPI,
     Cube,
+    Cylinder,
     GetStageUpAxis,
     SetStageUpAxis,
 )
@@ -39,6 +40,7 @@ from pxr.Vt import IntArray, Vec3fArray
 import screeninfo
 import software_client
 from software_client import Client, RunCommands
+import software_client.command
 
 from assets_tool.utils import (
     Matrix4d,
@@ -1264,6 +1266,15 @@ class BlenderClient:
                     software_client.create_cube(
                         self.client, cube.GetSizeAttr().Get(), path
                     )
+                elif prim.IsA(Cylinder):  # type: ignore
+                    cylinder = Cylinder(prim)
+                    software_client.command.create_cylinder(
+                        self.client,
+                        cylinder.GetRadiusAttr().Get(),
+                        cylinder.GetHeightAttr().Get(),
+                        str(cylinder.GetAxisAttr().Get()),
+                        path,
+                    )
 
             if prim.IsA(Xformable):  # type: ignore
                 translation, rotation, scale = from_usd_transform(
@@ -1390,6 +1401,7 @@ class PrimUtil:
                     path = prim.GetParent().GetPath()
                 case _:
                     raise Exception()
+        path = path.AppendChild(dpg.get_value(self.name_ui))
         return unique_usd_path(path, stage)
 
     def create_prim(self):
@@ -1398,6 +1410,7 @@ class PrimUtil:
         for prim in list(self.get_selection().iter()):
             path = self.get_create_path(prim)
             prim = stage.DefinePrim(path)
+            print(prim)
             self.add_prim(prim)
 
     def delete_prim(self):

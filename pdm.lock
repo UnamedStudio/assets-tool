@@ -116,7 +116,7 @@ requires_python = ">=3.11"
 subdirectory = "client"
 git = "https://github.com/UnamedStudio/software-server.git"
 ref = "main"
-revision = "0f2094857be3c50e1b74146a7e4a3631c92678ef"
+revision = "17fa1bc8cbf1429d0c5bcb64e6fb954c4130f224"
 summary = "Default template for PDM package"
 groups = ["default"]
 dependencies = [
