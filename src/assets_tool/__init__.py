@@ -663,6 +663,7 @@ class PropertiesUI:
 
                 def on_edit(sender, app_data, user_data):
                     set_value(app_data)
+
                 if type_name == "token[]" or type_name == "token":
                     allowed_tokens = prop.GetMetadata("allowedTokens")
                     if type_name == "token":
@@ -856,7 +857,7 @@ class SelectionUI:
         @dataclass
         class PrepareFilter:
             xform_cache: XformCache | None = None
-            geometries: list[tuple[NDArray[float], Matrix4d]] | None = None
+            geometries: list[tuple[float, Matrix4d]] | None = None
 
         def prepare_filter(self) -> PrepareFilter:
             xform_cache = None
@@ -868,13 +869,7 @@ class SelectionUI:
                 for geometry in PrimRange(self.geomtry_filter):
                     if geometry.IsA(Cube):  # type: ignore
                         cube = Cube(geometry)
-                        extent = (
-                            array(
-                                Transform(cube.GetLocalTransformation()).GetScale()
-                                * cube.GetSizeAttr().Get()
-                            )
-                            / 2
-                        )
+                        extent = abs(cube.GetSizeAttr().Get() / 2)
                         world2local = xform_cache.GetLocalToWorldTransform(
                             geometry
                         ).GetInverse()
@@ -917,11 +912,11 @@ class SelectionUI:
                 )
                 position = prepare_filter.xform_cache.GetLocalToWorldTransform(
                     prim
-                ).ExtractTranslation()
+                ).Transform(Vec3d(0.0, 0.0, 0.0))
                 inside = False
                 for extend, xform in prepare_filter.geometries:
                     local_position = array(xform.Transform(position))
-                    if numpy.all(abs(local_position) <= abs(extend)):
+                    if numpy.all(abs(local_position) <= extend):
                         inside = True
                         break
                 if not inside:
@@ -1565,6 +1560,7 @@ class FileUtil:
         self.container = container
         self.get_file_path = get_file_path
         with dpg.child_window(auto_resize_y=True, parent=container):
+            dpg.add_text("File Util")
             dpg.add_button(label="to readable", callback=self.to_readable)
 
     def to_readable(self):
