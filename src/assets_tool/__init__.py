@@ -585,7 +585,6 @@ class PropertiesUI:
 
     def select_prim(self, prim: Prim | None):
         self.editing_prim = prim
-        self.selected_api_name = None
         self.type_ui.clear()
         self.api_ui.clear()
         self.none_apply_api_ui.clear()
@@ -1445,11 +1444,9 @@ class SchemaUtil:
         self,
         container: int | str,
         get_selection: Callable[[], SelectionUI.Selection],
-        get_selected_api_name: Callable[[], str | None],
         on_schema_change: list[Callable[[Prim], None]],
     ) -> None:
         self.container = container
-        self.get_selected_api_name = get_selected_api_name
         self.get_selection = get_selection
         self.on_add_schema = on_schema_change
 
@@ -1491,13 +1488,11 @@ class SchemaUtil:
 
     def remove_api(self):
         for prim in self.get_selection().iter():
-            if api_name := self.get_selected_api_name():
+            if api_name := dpg.get_value(self.select_api_ui):
                 api = SchemaRegistry.GetTypeFromSchemaTypeName(api_name)
                 prim.RemoveAPI(api)
                 for callback in self.on_add_schema:
                     callback(prim)
-            elif api := dpg.get_value(self.select_api_ui):
-                prim.RemoveAPI(api)
 
     def set_type(self):
         for prim in self.get_selection().iter():
@@ -1707,7 +1702,6 @@ class App:
         self.schema_util = SchemaUtil(
             self.ui.operators,
             lambda: self.selection_ui.selection,
-            lambda: self.properties.selected_api_name,
             [self.properties.select_prim],
         )
         self.layer_util = LayerUtil(
