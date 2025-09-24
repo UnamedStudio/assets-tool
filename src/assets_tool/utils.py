@@ -146,8 +146,7 @@ def copy_api(source: Prim, dest: Prim, api: str):
                     dst_attr.SetMetadata(k, v)
 
 
-def relativize_sublayers(layer: Layer):
-    root = Path(layer.realPath)
+def relativize_sublayers(root: Path, layer: Layer):
     updated_paths = []
 
     for sublayer in layer.subLayerPaths:
@@ -158,7 +157,6 @@ def relativize_sublayers(layer: Layer):
     layer.subLayerPaths.clear()
     for updated_path in updated_paths:
         layer.subLayerPaths.append(updated_path)
-    layer.Save()
 
 
 def none_str2none(value: str) -> str | None:

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from cProfile import label
 from collections.abc import Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass
@@ -23,7 +24,7 @@ from pxr.Usd import (
     Relationship,
     PrimRange,
 )
-from pxr.Sdf import Layer, Path as UsdPath
+from pxr.Sdf import Layer, Path as UsdPath, ComputeAssetPathRelativeToLayer
 from pxr.Gf import Vec3d, Quatd, Transform
 from pxr.UsdGeom import (
     Mesh,
@@ -102,6 +103,7 @@ class TreeUI:
         button_ui: int | str
         children_ui: int | str
         root_ui: int | str
+        group_ui: int | str
         on_first_open: Callable[[], None] | None
 
     def __init__(
@@ -129,14 +131,14 @@ class TreeUI:
     ) -> Node:
         parent_ui = parent.children_ui if parent else self.children_ui
         with dpg.group(parent=parent_ui) as root_ui:
-            with dpg.group(horizontal=True):
+            with dpg.group(horizontal=True) as group_ui:
                 fold_button = dpg.add_button(label=self.open_label)
                 button_ui = dpg.add_button(label=label, callback=callback)
             children_ui = dpg.add_child_window(
                 parent=parent_ui, show=False, auto_resize_y=True
             )
         ret = self.Node(
-            False, fold_button, button_ui, children_ui, root_ui, on_first_open
+            False, fold_button, button_ui, children_ui, root_ui, group_ui, on_first_open
         )
         dpg.configure_item(fold_button, callback=lambda: self.toggle_open(ret))
         return ret
@@ -161,65 +163,75 @@ class TreeUI:
 class FileExplorer:
     def __init__(
         self,
-        container: int | str,
-        load_file_callbacks: list[Callable[[Path | None], None]],
-        opened_theme: int | str,
+        parent: int | str,
+        get_selection: Callable[[], SelectionUI.Selection],
+        select_stage: list[Callable[[Path | None], None]],
+        selected_theme: int | str,
+        guide_theme: int | str,
+        selected_and_guide_theme: int | str,
     ) -> None:
-        self.container = container
-        self.on_load_file = load_file_callbacks
-        self.opened_theme = opened_theme
+        self.get_selection = get_selection
+        self.select_stage = select_stage
+        self.selected_theme = selected_theme
+        self.guide_theme = guide_theme
+        self.selected_and_guide_theme = selected_and_guide_theme
         self.stage: Stage | None = None
-        self.old_operation_custom_data: dict[str, Any] | None = None
 
         self.selected_file_path: Path | None = None
         self.opened_directory_path: Path | None = None
-        self.opened_file_ui = dpg.add_text(parent=self.container)
+        self.opened_file_ui = dpg.add_text(parent=parent)
         self.path2button = dict[Path, int | str]()
+        self.path2node = dict[Path, TreeUI.Node]()
+        self.themed_uis = set[int | str]()
 
         self.edit_mode_ui = dpg.add_combo(
             ["update", "override", "override replace"],
             label="edit mode",
             default_value="override replace",
             callback=self.update_operation_name_ui,
-            parent=self.container,
+            parent=parent,
         )
         self.operation_name_ui = dpg.add_input_text(
             label="operation name",
             default_value="none",
-            parent=self.container,
+            parent=parent,
         )
-        dpg.add_button(label="save", callback=self.save, parent=self.container)
+        dpg.add_button(label="save", callback=self.save, parent=parent)
         self.operation_stack_ui = dpg.add_tree_node(
-            label="operation stack", parent=self.container
+            label="operation stack", parent=parent
         )
-        self.tree_ui = dpg.add_child_window(parent=self.container)
+        self.tree_ui = TreeUI(parent=parent)
 
     def save(self):
-        if self.stage:
-            assert self.selected_file_path
-            stem = self.selected_file_path.stem
+        def save_stage(stage: Stage, current_path: Path) -> bool:
+            root_layer = stage.GetRootLayer()
+            stem = current_path.stem
             operation_name = dpg.get_value(self.operation_name_ui)
-            root_layer = self.stage.GetRootLayer()
+
             reload = False
             if Layer.IsAnonymousLayerIdentifier(root_layer.identifier):
                 edit_mode = dpg.get_value(self.edit_mode_ui)
                 match edit_mode:
                     case "override replace" | "override":
+                        reload = True
                         if_replace = edit_mode == "override replace"
-                        if self.old_operation_custom_data:
-                            selected_operation_custom_data = (
-                                self.old_operation_custom_data
+                        old_stage = Stage.Open(str(current_path))
+                        old_operation_custom_data: dict[str, Any] | None = (
+                            old_stage.GetRootLayer().customLayerData.get(
+                                "assets_tool:operation"
                             )
-                        else:
-                            selected_operation_custom_data: dict[str, Any] = {
+                        )
+                        del old_stage
+                        if not old_operation_custom_data:
+                            old_operation_custom_data = {
                                 "operation": "",
                                 "input": "",
                                 "output": "",
                                 "original_name": stem,
                             }
-                        original_name = selected_operation_custom_data["original_name"]
+                        original_name = old_operation_custom_data["original_name"]
                         path = unique_path(
-                            self.selected_file_path.with_stem(
+                            current_path.with_stem(
                                 f"{original_name}-{operation_name}"
                                 if if_replace
                                 else f"{original_name}+{operation_name}"
@@ -229,8 +241,8 @@ class FileExplorer:
                         # input layer
                         if if_replace:
                             input: str
-                            if input := selected_operation_custom_data["input"]:
-                                input_path = self.selected_file_path.parent / input
+                            if input := old_operation_custom_data["input"]:
+                                input_path = current_path.parent / input
                                 input_stage = Stage.Open(str(input_path))
                                 input_root_layer = input_stage.GetRootLayer()
                                 input_custom_layer_data = (
@@ -255,17 +267,13 @@ class FileExplorer:
                                 del input_stage
 
                         # selected layer
-                        selected_stage = Stage.Open(str(self.selected_file_path))
+                        selected_stage = Stage.Open(str(current_path))
                         selected_root_layer = selected_stage.GetRootLayer()
                         custom_layer_data = selected_root_layer.customLayerData
-                        operation_custom_data = deepcopy(selected_operation_custom_data)
+                        operation_custom_data = deepcopy(old_operation_custom_data)
                         operation_custom_data["output"] = Path(
                             os.path.relpath(
-                                str(
-                                    (
-                                        self.selected_file_path if if_replace else path
-                                    ).resolve()
-                                ),
+                                str((current_path if if_replace else path).resolve()),
                                 str(path.parent.resolve()),
                             )
                         ).as_posix()
@@ -278,39 +286,48 @@ class FileExplorer:
 
                         # output layer
                         custom_layer_data = root_layer.customLayerData
-                        operation_custom_data = deepcopy(selected_operation_custom_data)
+                        operation_custom_data = deepcopy(old_operation_custom_data)
                         operation_custom_data["input"] = os.path.relpath(
-                            str(
-                                (
-                                    path if if_replace else self.selected_file_path
-                                ).resolve()
-                            ),
-                            str(self.selected_file_path.parent.resolve()),
+                            str((path if if_replace else current_path).resolve()),
+                            str(current_path.parent.resolve()),
                         )
                         operation_custom_data["operation"] = operation_name
+                        print(operation_name)
                         custom_layer_data["assets_tool:operation"] = (
                             operation_custom_data
                         )
                         root_layer.customLayerData = custom_layer_data
-                        root_layer.subLayerPaths.clear()
 
                         # file
                         if if_replace:
-                            self.selected_file_path.rename(path)
-                        root_layer.subLayerPaths.append(
-                            str(path if if_replace else self.selected_file_path)
+                            root_layer.subLayerPaths.clear()
+                            current_path.rename(path)
+                            root_layer.subLayerPaths.append(
+                                str(path if if_replace else current_path)
+                            )
+                            relativize_sublayers(current_path, root_layer)
+                        root_layer_identifier = str(
+                            current_path if if_replace else path
                         )
-                        root_layer.identifier = str(
-                            self.selected_file_path if if_replace else path
-                        )
-                        relativize_sublayers(root_layer)
-                        reload = True
-            self.stage.Save()
-            del self.stage
-            if reload:
-                self.load_path(self.selected_file_path.parent)()
+                        root_layer.Export(root_layer_identifier)
+                        self.add_path_ui(path)
+                    case _:
+                        root_layer.Save()
+            del stage
+            return reload
 
-            self.load_path(None)()
+        selection = self.get_selection()
+        if len(selection.selects) > 0:
+            if self.stage:
+                assert self.selected_file_path
+                if save_stage(self.stage, self.selected_file_path):
+                    self.load_path(self.selected_file_path.parent)()
+
+                self.load_path(None)()
+        else:
+            for path, stage in selection.dirty_stage.items():
+                save_stage(stage, path)
+            selection.dirty_stage.clear()
 
     def update_operation_name_ui(self):
         match dpg.get_value(self.edit_mode_ui):
@@ -385,11 +402,25 @@ class FileExplorer:
 
     def update_opened_file_ui(self):
         assert self.opened_directory_path
-        for path, button in self.path2button.items():
-            if self.selected_file_path and path == self.selected_file_path:
-                dpg.bind_item_theme(button, self.opened_theme)
-            else:
-                dpg.bind_item_theme(button, 0)
+        selection = self.get_selection()
+        for ui in self.themed_uis:
+            dpg.bind_item_theme(ui, 0)
+        self.themed_uis.clear()
+        if selection.stage_guide:
+            if button := self.path2button.get(selection.stage_guide):
+                dpg.bind_item_theme(button, self.guide_theme)
+                self.themed_uis.add(button)
+        for path in selection.stage_selects:
+            is_guide = (
+                selection.stage_guide is not None
+                and path.resolve() == selection.stage_guide.resolve()
+            )
+            if button := self.path2button.get(path):
+                if is_guide:
+                    dpg.bind_item_theme(button, self.selected_and_guide_theme)
+                else:
+                    dpg.bind_item_theme(button, self.selected_theme)
+                self.themed_uis.add(button)
         dpg.set_value(
             self.opened_file_ui,
             os.path.relpath(
@@ -400,6 +431,51 @@ class FileExplorer:
             else "",
         )
 
+    def add_path_ui(self, path: Path):
+        if node := self.path2node.get(path):
+            self.add_path_ui_raw(path, node)
+
+    def add_path_ui_raw(self, path: Path, parent: TreeUI.Node | None = None):
+        raw_parent = parent.children_ui if parent else self.tree_ui.children_ui
+
+        def on_select():
+            for callback in self.select_stage:
+                callback(path)
+            self.update_opened_file_ui()
+
+        if path.is_dir():
+            node = self.tree_ui.node(
+                path.name,
+                self.load_path(path),
+                parent,
+            )
+
+            def on_first_open():
+                self.add_paths_ui(path, node)
+
+            node.on_first_open = on_first_open
+
+            dpg.add_button(
+                label=" ",
+                parent=node.group_ui,
+                callback=on_select,
+                before=node.fold_button,
+            )
+            button = node.button_ui
+            self.path2node[path] = node
+        elif path.is_file():
+            with dpg.group(horizontal=True, parent=raw_parent):
+                dpg.add_button(label=" ", callback=on_select)
+                button = dpg.add_button(label=path.name, callback=self.load_path(path))
+        else:
+            button = None
+        if button:
+            self.path2button[path] = button
+
+    def add_paths_ui(self, path: Path, parent: TreeUI.Node | None = None):
+        for child in sorted(path.iterdir()):
+            self.add_path_ui_raw(child, parent)
+
     def load_path(
         self,
         path: Path | None,
@@ -408,66 +484,55 @@ class FileExplorer:
             if not path:
                 self.selected_file_path = path
                 self.stage = None
-                self.old_operation_custom_data = None
                 self.update_operation_stack_ui()
-                for callback in self.on_load_file:
-                    callback(path)
             elif path.is_dir():
                 self.opened_directory_path = path
                 self.path2button.clear()
-                dpg.delete_item(self.tree_ui, children_only=True)
+                self.themed_uis.clear()
+                self.path2node.clear()
+                self.tree_ui.clear()
                 dpg.add_button(
                     label="..",
                     callback=self.load_path(path.parent),
-                    parent=self.tree_ui,
+                    parent=self.tree_ui.children_ui,
                 )
-                for child in sorted(path.iterdir()):
-                    button = dpg.add_button(
-                        label=child.name,
-                        callback=self.load_path(child),
-                        parent=self.tree_ui,
-                    )
-                    self.path2button[child] = button
+                self.add_paths_ui(path)
             elif path.is_file():
                 self.selected_file_path = path
                 self.stage = None
-                self.old_operation_custom_data = None
                 self.update_operation_stack_ui()
                 match path.suffix:
                     case ".usd" | ".usda" | ".usdc":
-                        old_stage = Stage.Open(str(self.selected_file_path))
-                        self.old_operation_custom_data = (
-                            old_stage.GetRootLayer().customLayerData.get(
-                                "assets_tool:operation"
-                            )
-                        )
-                        del old_stage
                         self.update_operation_name_ui()
-                        match dpg.get_value(self.edit_mode_ui):
-                            case "update":
-                                self.stage = Stage.Open(str(path))
-                            case "override" | "override replace":
-                                root_layer = Layer.CreateAnonymous()
-                                root_layer.subLayerPaths.append(str(path))
-                                stage = Stage.Open(str(path))
-                                defaultPrim = stage.GetRootLayer().defaultPrim
-                                up_axis = GetStageUpAxis(stage)
-                                del stage
-                                root_layer.defaultPrim = defaultPrim
-                                self.stage = Stage.Open(root_layer)
-                                SetStageUpAxis(self.stage, up_axis)
-                            case _:
-                                raise Exception()
+                        self.stage = self.load_stage(self.selected_file_path)
 
                     case _:
                         raise Exception(f"unsupported file {path}")
-                for callback in self.on_load_file:
+                for callback in self.select_stage:
                     callback(path)
             else:
                 raise Exception()
             self.update_opened_file_ui()
 
         return ret
+
+    def load_stage(self, path: Path) -> Stage:
+        match dpg.get_value(self.edit_mode_ui):
+            case "update":
+                stage = Stage.Open(str(path))
+            case "override" | "override replace":
+                root_layer = Layer.CreateAnonymous()
+                root_layer.subLayerPaths.append(str(path))
+                stage = Stage.Open(str(path))
+                defaultPrim = stage.GetRootLayer().defaultPrim
+                up_axis = GetStageUpAxis(stage)
+                del stage
+                root_layer.defaultPrim = defaultPrim
+                stage = Stage.Open(root_layer)
+                SetStageUpAxis(stage, up_axis)
+            case _:
+                raise Exception()
+        return stage
 
 
 class Hierarchy:
@@ -521,6 +586,8 @@ class Hierarchy:
             self.tree_ui.toggle_open(node)
 
     def add_prim(self, prim: Prim):
+        if not prim:
+            return
         if prim in self.prim2node:
             return
         if node := self.prim2node.get(prim.GetParent()):
@@ -541,7 +608,7 @@ class Hierarchy:
             dpg.bind_item_theme(ui, 0)
         self.themed_uis.clear()
         selection = self.get_selection()
-        for selected in selection.selected:
+        for selected in selection.selects:
             if node := self.prim2node.get(selected):
                 dpg.bind_item_theme(node.button_ui, self.selected_theme)
                 self.themed_uis.add(node.button_ui)
@@ -550,7 +617,7 @@ class Hierarchy:
                 dpg.bind_item_theme(
                     node.button_ui,
                     self.selected_and_guide_theme
-                    if selection.guide in selection.selected
+                    if selection.guide in selection.selects
                     else self.guide_theme,
                 )
                 self.themed_uis.add(node.button_ui)
@@ -926,35 +993,109 @@ class SelectionUI:
             return True
 
     @dataclass
+    class StageSelect:
+        path: Path
+        exclusive: bool
+        name_exclude: list[str]
+
     class Selection:
-        selected: dict[Prim, SelectionUI.Select]
-        guide: Prim | None = None
+        def __init__(self, context: SelectionUI) -> None:
+            self.selects = dict[Prim, SelectionUI.Select]()
+            self.guide: Prim | None = None
+            self.stage_selects = dict[Path, SelectionUI.StageSelect]()
+            self.stage_guide: Path | None = None
+            self.dirty_stage = dict[Path, Stage]()
+            self.context = context
 
         def iter(self) -> Iterable[Prim]:
             excludes = set[Prim]()
-            for select in self.selected.values():
+            for select in self.selects.values():
                 if select.exclusive:
                     for prim in select.iter():
                         excludes.add(prim)
-            for select in self.selected.values():
+            for select in self.selects.values():
                 if not select.exclusive:
                     for prim in select.iter():
                         if prim not in excludes:
                             yield prim
 
+        def stage_iter(self) -> Iterable[tuple[Path, Stage, Iterable[Prim]]]:
+            paths = list[Path]()
+
+            def collect_path(path: Path, select: SelectionUI.StageSelect):
+                if path.is_dir():
+                    for path in path.iterdir():
+                        if path in self.stage_selects:
+                            continue
+
+                        collect_path(path, select)
+                elif path.is_file():
+                    match path.suffix:
+                        case ".usd" | ".usda" | ".usdc":
+                            path_str = path.as_posix().lower()
+                            if all(i not in path_str for i in select.name_exclude):
+                                paths.append(path.resolve())
+
+            for select in self.stage_selects.values():
+                if not select.exclusive:
+                    collect_path(select.path, select)
+
+            operation_name_filter = dpg.get_value(self.context.operation_name_filter_ui)
+            refereced_path = set[Path]()
+            if not operation_name_filter:
+                for path in paths:
+                    stage = Stage.Open(str(path))
+                    root_layer = stage.GetRootLayer()
+                    for sub_layer_rel_path in root_layer.subLayerPaths:
+                        sub_layer_path = ComputeAssetPathRelativeToLayer(
+                            root_layer, sub_layer_rel_path
+                        )
+                        refereced_path.add(Path(sub_layer_path).resolve())
+
+            for path in paths:
+                print(path)
+                if not operation_name_filter and path in refereced_path:
+                    print("in ref")
+                    continue
+                stage = Stage.Open(str(path))
+                if operation_name_filter:
+                    if (
+                        operation_custom_layer_data
+                        := stage.GetRootLayer().customLayerData.get(
+                            "assets_tool:operation"
+                        )
+                    ):
+                        operation_name = operation_custom_layer_data["operation"]
+                    else:
+                        operation_name = None
+
+                    if not operation_name:
+                        print("no op")
+                        continue
+                    elif operation_name_filter != operation_name:
+                        print(f"ne op {operation_name}")
+                        continue
+                stage = self.context.load_stage(path)
+                self.dirty_stage[path] = stage
+                yield path, stage, stage.Traverse()
+
     def __init__(
         self,
         selected_theme: int | str,
         on_select: list[Callable[[], None]],
+        on_stage_select: list[Callable[[], None]],
         get_stage: Callable[[], Stage | None],
         add_prim: Callable[[Prim], None],
+        load_stage: Callable[[Path], Stage],
         parent: int | str = 0,
     ) -> None:
-        self.selection = self.Selection({}, None)
+        self.selection = self.Selection(self)
         self.selected_theme = selected_theme
         self.on_select = on_select
+        self.on_stage_select = on_stage_select
         self.get_stage = get_stage
         self.add_prim = add_prim
+        self.load_stage = load_stage
         self.editing_select: Prim | None = None
 
         type_types = UsdType.FindByName("UsdTyped").GetAllDerivedTypes()
@@ -972,6 +1113,9 @@ class SelectionUI:
 
         with dpg.child_window(auto_resize_y=True, parent=parent):
             dpg.add_text("Selection")
+            dpg.add_button(
+                label="test", callback=lambda: list(self.selection.stage_iter())
+            )
             self.mode_ui = dpg.add_combo(
                 ("single", "multi", "guide"),
                 label="mode",
@@ -995,6 +1139,7 @@ class SelectionUI:
                 self.exclusive_ui = dpg.add_checkbox(
                     label="exclusive", default_value=False, callback=on_exclusive_ui
                 )
+            self.operation_name_filter_ui = dpg.add_input_text(label="operation name")
             with dpg.tree_node(label="filters", show=False) as self.filters_ui:
                 self.name_filter_ui = dpg.add_input_text(label="name")
 
@@ -1067,14 +1212,14 @@ class SelectionUI:
 
     def get_editing_select(self) -> SelectionUI.Select | None:
         if self.editing_select:
-            return self.selection.selected.get(self.editing_select)
+            return self.selection.selects.get(self.editing_select)
         return None
 
     def on_recursive(self, value: bool):
         dpg.configure_item(self.filters_ui, show=value)
 
     def clear(self):
-        self.selection.selected.clear()
+        self.selection.selects.clear()
         self.select(None)
         self.update_selected_ui()
 
@@ -1086,7 +1231,7 @@ class SelectionUI:
 
                 def on_button():
                     self.editing_select = prim
-                    if select := self.selection.selected.get(self.editing_select):
+                    if select := self.selection.selects.get(self.editing_select):
                         dpg.set_value(self.recursive_ui, select.recursive)
                         self.on_recursive(select.recursive)
                         dpg.set_value(self.exclusive_ui, select.exclusive)
@@ -1112,38 +1257,58 @@ class SelectionUI:
                     self.selected_theme if prim == self.editing_select else 0,
                 )
 
-        for prim, info in self.selection.selected.items():
+        for prim, info in self.selection.selects.items():
             add_selected_ui(prim, info)
 
     def select(self, prim: Prim | None):
         self.selection.guide = prim
         if prim:
             mode = dpg.get_value(self.mode_ui)
+            if dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_LControl):
+                mode = "multi"
             match mode:
                 case "single" | "multi":
                     if mode == "single":
-                        self.selection.selected.clear()
-                    if prim:
-                        if prim in self.selection.selected:
-                            self.selection.selected.pop(prim, None)
-                        else:
-                            api_filter = none_str2none(
-                                dpg.get_value(self.api_filter_ui)
-                            )
-                            self.selection.selected[prim] = self.Select(
-                                prim,
-                                dpg.get_value(self.recursive_ui),
-                                dpg.get_value(self.exclusive_ui),
-                                none_str2none(dpg.get_value(self.name_filter_ui)),
-                                none_str2none(dpg.get_value(self.type_filter_ui)),
-                                [api_filter] if api_filter else [],
-                                self.geometry_filter,
-                            )
-                            self.editing_select = prim
-                case "guide":
-                    self.selection.guide = prim
+                        self.selection.selects.clear()
+                    if prim in self.selection.selects:
+                        self.selection.selects.pop(prim, None)
+                    else:
+                        api_filter = none_str2none(dpg.get_value(self.api_filter_ui))
+                        self.selection.selects[prim] = self.Select(
+                            prim,
+                            dpg.get_value(self.recursive_ui),
+                            dpg.get_value(self.exclusive_ui),
+                            none_str2none(dpg.get_value(self.name_filter_ui)),
+                            none_str2none(dpg.get_value(self.type_filter_ui)),
+                            [api_filter] if api_filter else [],
+                            self.geometry_filter,
+                        )
+                        self.editing_select = prim
         self.update_selected_ui()
         for callback in self.on_select:
+            callback()
+
+    def select_stage(self, path: Path | None):
+        if path is not None:
+            path = path.resolve()
+        self.selection.stage_guide = path
+        if path:
+            mode = dpg.get_value(self.mode_ui)
+            if dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_LControl):
+                mode = "multi"
+            match mode:
+                case "single" | "multi":
+                    if mode == "single":
+                        self.selection.stage_selects.clear()
+                    if path in self.selection.selects:
+                        self.selection.stage_selects.pop(path, None)
+                    else:
+                        self.selection.stage_selects[path] = self.StageSelect(
+                            path,
+                            dpg.get_value(self.exclusive_ui),
+                            ["materials", "_payload", "_geo", "_look"],
+                        )
+        for callback in self.on_stage_select:
             callback()
 
 
@@ -1668,12 +1833,16 @@ class App:
         )
         self.file_explorer = FileExplorer(
             self.ui.file_explorer,
+            lambda: self.selection_ui.selection,
             [
                 lambda _: self.hierarchy.load_stage(),
                 lambda _: self.selection_ui.clear(),
                 lambda _: self.blender_client.unsync(),
+                lambda path: self.selection_ui.select_stage(path),
             ],
             self.selected_theme,
+            self.guide_theme,
+            self.selected_and_guide_theme,
         )
         self.selection_ui = SelectionUI(
             self.selected_theme,
@@ -1681,8 +1850,10 @@ class App:
                 self.hierarchy.update_ui,
                 lambda: self.properties.select_prim(self.selection_ui.selection.guide),
             ],
+            [],
             lambda: self.file_explorer.stage,
             self.hierarchy.add_prim,
+            self.file_explorer.load_stage,
             parent=self.ui.operators,
         )
         self.blender_client = BlenderClient(
