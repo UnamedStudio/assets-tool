@@ -12,7 +12,7 @@ from time import sleep
 from typing import Any
 import dearpygui.dearpygui as dpg
 
-from numpy import array, float32, int32
+from numpy import array, float32, float64, int32
 import numpy
 from numpy.typing import NDArray
 from pxr.Usd import (
@@ -1417,12 +1417,24 @@ class BlenderClient:
                     mesh = Mesh(prim)
                     synced_mesh = BlenderClient.SyncedMesh()
                     self.synced.meshes[path] = synced_mesh
-                    face_vertex_counts = array(mesh.GetFaceVertexCountsAttr().Get())
-                    assert numpy.all(face_vertex_counts == 3)
+                    if face_vertex_counts_raw := mesh.GetFaceVertexCountsAttr().Get():
+                        face_vertex_counts = array(face_vertex_counts_raw)
+                        assert numpy.all(face_vertex_counts == 3)
+
+                    if positions_raw := mesh.GetPointsAttr().Get():
+                        positions = array(positions_raw)
+                    else:
+                        positions = array(((), ()))
+
+                    if indices_raw := mesh.GetFaceVertexIndicesAttr().Get():
+                        triangles = array(indices_raw).reshape(-1, 3)
+                    else:
+                        triangles = NDArray((0, 3), int32)
+
                     software_client.create_mesh(
                         self.client,
-                        array(mesh.GetPointsAttr().Get()),
-                        array(mesh.GetFaceVertexIndicesAttr().Get()).reshape(-1, 3),
+                        array(positions),
+                        array(triangles),
                         path,
                         dpg.get_value(self.if_sync_mesh_ui),
                     )
