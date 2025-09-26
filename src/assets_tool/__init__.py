@@ -312,7 +312,9 @@ class FileExplorer:
                         root_layer.Export(root_layer_identifier)
                         self.add_path_ui(path)
                     case _:
-                        root_layer.Save()
+                        raise Exception()
+            else:
+                assert root_layer.Save()
             del stage
             return reload
 
