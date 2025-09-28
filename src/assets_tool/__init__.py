@@ -601,9 +601,9 @@ class Hierarchy:
     def remove_prim(self, prim: Prim):
         for callback in self.on_remove_prim:
             callback(prim)
-        node = self.prim2node.pop(prim)
-        self.themed_uis.discard(node.button_ui)
-        dpg.delete_item(node.root_ui)
+        if node := self.prim2node.pop(prim, None):
+            dpg.delete_item(node.root_ui)
+            self.themed_uis.discard(node.button_ui)
 
     def update_ui(self):
         for ui in self.themed_uis:
