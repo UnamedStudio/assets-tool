@@ -1302,7 +1302,7 @@ class SelectionUI:
                 case "single" | "multi":
                     if mode == "single":
                         self.selection.stage_selects.clear()
-                    if path in self.selection.selects:
+                    if path in self.selection.stage_selects:
                         self.selection.stage_selects.pop(path, None)
                     else:
                         self.selection.stage_selects[path] = self.StageSelect(
