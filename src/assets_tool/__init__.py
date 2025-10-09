@@ -120,7 +120,7 @@ class TreeUI:
                 self.label_ui = dpg.add_text(label)
             else:
                 self.label_ui = None
-            self.children_ui = dpg.add_child_window(auto_resize_y=True, parent=parent)
+            self.children_ui = dpg.add_child_window(auto_resize_y=True)
 
     def node(
         self,
@@ -134,9 +134,7 @@ class TreeUI:
             with dpg.group(horizontal=True) as group_ui:
                 fold_button = dpg.add_button(label=self.open_label)
                 button_ui = dpg.add_button(label=label, callback=callback)
-            children_ui = dpg.add_child_window(
-                parent=parent_ui, show=False, auto_resize_y=True
-            )
+            children_ui = dpg.add_child_window(show=False, auto_resize_y=True)
         ret = self.Node(
             False, fold_button, button_ui, children_ui, root_ui, group_ui, on_first_open
         )
@@ -302,9 +300,7 @@ class FileExplorer:
                         if if_replace:
                             root_layer.subLayerPaths.clear()
                             current_path.rename(path)
-                            root_layer.subLayerPaths.append(
-                                str(path if if_replace else current_path)
-                            )
+                            root_layer.subLayerPaths.append(str(path))
                             relativize_sublayers(current_path, root_layer)
                         root_layer_identifier = str(
                             current_path if if_replace else path
@@ -1119,9 +1115,12 @@ class SelectionUI:
                 label="test", callback=lambda: list(self.selection.stage_iter())
             )
             self.mode_ui = dpg.add_combo(
-                ("single", "multi", "guide"),
+                ("single", "multi", "multi continuous", "guide"),
                 label="mode",
                 default_value="single",
+            )
+            self.multi_file_ui = dpg.add_checkbox(
+                label="multi file", default_value=False
             )
             dpg.add_button(label="clear", callback=self.clear)
             with dpg.group(horizontal=True):
@@ -1266,10 +1265,12 @@ class SelectionUI:
         self.selection.guide = prim
         if prim:
             mode = dpg.get_value(self.mode_ui)
-            if dpg.is_key_down(dpg.mvKey_LShift) or dpg.is_key_down(dpg.mvKey_LControl):
+            if dpg.is_key_down(dpg.mvKey_LControl):
                 mode = "multi"
+            elif dpg.is_key_down(dpg.mvKey_LShift):
+                mode = "multi continuous"
             match mode:
-                case "single" | "multi":
+                case "single" | "multi" | "multi continuous":
                     if mode == "single":
                         self.selection.selects.clear()
                     if prim in self.selection.selects:
