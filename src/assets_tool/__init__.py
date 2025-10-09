@@ -96,15 +96,24 @@ class SelectorUI[T]:
 
 
 class TreeUI:
-    @dataclass
     class Node:
-        is_open: bool
-        fold_button: int | str
-        button_ui: int | str
-        children_ui: int | str
-        root_ui: int | str
-        group_ui: int | str
-        on_first_open: Callable[[], None] | None
+        def __init__(
+            self,
+            is_open: bool,
+            fold_button: int | str,
+            button_ui: int | str,
+            children_ui: int | str,
+            root_ui: int | str,
+            group_ui: int | str,
+            on_first_open: Callable[[], None] | None,
+        ):
+            self.is_open = is_open
+            self.fold_button = fold_button
+            self.button_ui = button_ui
+            self.children_ui = children_ui
+            self.root_ui = root_ui
+            self.group_ui = group_ui
+            self.on_first_open = on_first_open
 
     def __init__(
         self,
@@ -1051,9 +1060,7 @@ class SelectionUI:
                         refereced_path.add(Path(sub_layer_path).resolve())
 
             for path in paths:
-                print(path)
                 if not operation_name_filter and path in refereced_path:
-                    print("in ref")
                     continue
                 stage = Stage.Open(str(path))
                 if operation_name_filter:
@@ -1068,10 +1075,8 @@ class SelectionUI:
                         operation_name = None
 
                     if not operation_name:
-                        print("no op")
                         continue
                     elif operation_name_filter != operation_name:
-                        print(f"ne op {operation_name}")
                         continue
                 stage = self.context.load_stage(path)
                 self.dirty_stage[path] = stage
@@ -1118,9 +1123,6 @@ class SelectionUI:
                 ("single", "multi", "multi continuous", "guide"),
                 label="mode",
                 default_value="single",
-            )
-            self.multi_file_ui = dpg.add_checkbox(
-                label="multi file", default_value=False
             )
             dpg.add_button(label="clear", callback=self.clear)
             with dpg.group(horizontal=True):
@@ -1262,6 +1264,7 @@ class SelectionUI:
             add_selected_ui(prim, info)
 
     def select(self, prim: Prim | None):
+        prev_guide = self.selection.guide
         self.selection.guide = prim
         if prim:
             mode = dpg.get_value(self.mode_ui)
@@ -1273,20 +1276,39 @@ class SelectionUI:
                 case "single" | "multi" | "multi continuous":
                     if mode == "single":
                         self.selection.selects.clear()
-                    if prim in self.selection.selects:
-                        self.selection.selects.pop(prim, None)
+                    if prev_guide is not None and mode == "multi continuous":
+                        brothers = prim.GetParent().GetChildren()
+                        prims = []
+                        counter = 0
+                        for brother in brothers:
+                            if brother == prim:
+                                counter += 1
+                            if brother == prev_guide:
+                                counter += 1
+                            if counter > 0 and brother != prev_guide:
+                                prims.append(brother)
+                            if counter >= 2:
+                                break
                     else:
-                        api_filter = none_str2none(dpg.get_value(self.api_filter_ui))
-                        self.selection.selects[prim] = self.Select(
-                            prim,
-                            dpg.get_value(self.recursive_ui),
-                            dpg.get_value(self.exclusive_ui),
-                            none_str2none(dpg.get_value(self.name_filter_ui)),
-                            none_str2none(dpg.get_value(self.type_filter_ui)),
-                            [api_filter] if api_filter else [],
-                            self.geometry_filter,
-                        )
-                        self.editing_select = prim
+                        prims = (prim,)
+
+                    for prim in prims:
+                        if prim in self.selection.selects:
+                            self.selection.selects.pop(prim, None)
+                        else:
+                            api_filter = none_str2none(
+                                dpg.get_value(self.api_filter_ui)
+                            )
+                            self.selection.selects[prim] = self.Select(
+                                prim,
+                                dpg.get_value(self.recursive_ui),
+                                dpg.get_value(self.exclusive_ui),
+                                none_str2none(dpg.get_value(self.name_filter_ui)),
+                                none_str2none(dpg.get_value(self.type_filter_ui)),
+                                [api_filter] if api_filter else [],
+                                self.geometry_filter,
+                            )
+                            self.editing_select = prim
         self.update_selected_ui()
         for callback in self.on_select:
             callback()
