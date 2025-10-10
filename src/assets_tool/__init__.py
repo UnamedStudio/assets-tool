@@ -211,17 +211,14 @@ class FileExplorer:
         self.tree_ui = TreeUI(parent=parent)
 
     def save(self):
-        def save_stage(stage: Stage, current_path: Path) -> bool:
+        def save_stage(stage: Stage, current_path: Path) -> None:
             root_layer = stage.GetRootLayer()
             stem = current_path.stem
             operation_name = dpg.get_value(self.operation_name_ui)
-
-            reload = False
             if Layer.IsAnonymousLayerIdentifier(root_layer.identifier):
                 edit_mode = dpg.get_value(self.edit_mode_ui)
                 match edit_mode:
                     case "override replace" | "override":
-                        reload = True
                         if_replace = edit_mode == "override replace"
                         old_stage = Stage.Open(str(current_path))
                         old_operation_custom_data: dict[str, Any] | None = (
@@ -320,15 +317,12 @@ class FileExplorer:
             else:
                 assert root_layer.Save()
             del stage
-            return reload
 
         selection = self.get_selection()
         if len(selection.selects) > 0:
             if self.stage:
                 assert self.selected_file_path
-                if save_stage(self.stage, self.selected_file_path):
-                    self.load_path(self.selected_file_path.parent)()
-
+                save_stage(self.stage, self.selected_file_path)
                 self.load_path(None)()
         else:
             for path, stage in selection.dirty_stage.items():
@@ -438,8 +432,13 @@ class FileExplorer:
         )
 
     def add_path_ui(self, path: Path):
-        if node := self.path2node.get(path):
+        if node := self.path2node.get(path.parent):
             self.add_path_ui_raw(path, node)
+        elif (
+            self.opened_directory_path is not None
+            and path.parent.resolve() == self.opened_directory_path.resolve()
+        ):
+            self.add_path_ui_raw(path, None)
 
     def add_path_ui_raw(self, path: Path, parent: TreeUI.Node | None = None):
         raw_parent = parent.children_ui if parent else self.tree_ui.children_ui
@@ -491,6 +490,8 @@ class FileExplorer:
                 self.selected_file_path = path
                 self.stage = None
                 self.update_operation_stack_ui()
+                for callback in self.select_stage:
+                    callback(path)
             elif path.is_dir():
                 self.opened_directory_path = path
                 self.path2button.clear()

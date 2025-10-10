@@ -168,4 +168,5 @@ def overwrite(layer: Layer, path: Path):
     overwrite = path.exists()
     layer.Export(str(path))
     if overwrite:
-        Layer.Find(str(path)).Reload()
+        if layer := Layer.Find(str(path)):
+            layer.Reload()
