@@ -163,3 +163,9 @@ def none_str2none(value: str) -> str | None:
     if not value or value == "None":
         return None
     return value
+
+def overwrite(layer: Layer, path: Path):
+    overwrite = path.exists()
+    layer.Export(str(path))
+    if overwrite:
+        Layer.Find(str(path)).Reload()

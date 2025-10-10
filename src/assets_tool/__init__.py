@@ -51,6 +51,7 @@ from assets_tool.utils import (
     is_attr_authored_in_layer,
     is_prim_authored_in_layer,
     none_str2none,
+    overwrite,
     quat,
     is_attr_blocked,
     relativize_sublayers,
@@ -311,10 +312,8 @@ class FileExplorer:
                             current_path.rename(path)
                             root_layer.subLayerPaths.append(str(path))
                             relativize_sublayers(current_path, root_layer)
-                        root_layer_identifier = str(
-                            current_path if if_replace else path
-                        )
-                        root_layer.Export(root_layer_identifier)
+                        root_layer_path = current_path if if_replace else path
+                        overwrite(root_layer, root_layer_path)
                         self.add_path_ui(path)
                     case _:
                         raise Exception()
