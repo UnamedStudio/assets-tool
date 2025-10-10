@@ -316,6 +316,7 @@ class FileExplorer:
                         raise Exception()
             else:
                 assert root_layer.Save()
+            selection.dirty_stage.pop(current_path, None)
             del stage
 
         selection = self.get_selection()
@@ -325,9 +326,8 @@ class FileExplorer:
                 save_stage(self.stage, self.selected_file_path)
                 self.load_path(None)()
         else:
-            for path, stage in selection.dirty_stage.items():
+            for path, stage, _ in selection.stage_iter():
                 save_stage(stage, path)
-            selection.dirty_stage.clear()
 
     def update_operation_name_ui(self):
         match dpg.get_value(self.edit_mode_ui):
