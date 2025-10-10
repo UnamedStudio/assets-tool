@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from importlib.resources import as_file
-from math import ceil
+from math import ceil, exp
 import os
 from pathlib import Path
 from queue import Queue
@@ -1818,23 +1818,38 @@ class UI:
             callback()
         dpg.destroy_context()
 
+class FontUtil:
+    from importlib.resources import files
+
+    font_path = files("assets_tool.assets").joinpath("fonts/ARIAL.TTF")
+
+    def __init__(self, default_scale: float) -> None:
+        self.scale = default_scale
+        self.max_height = 600
+        with dpg.font_registry():
+            with as_file(self.font_path) as path:
+                default_font = dpg.add_font(str(path), 128)
+                dpg.bind_font(default_font)
+        for i in screeninfo.get_monitors():
+            if i.height > self.max_height:
+                self.max_height = i.height
+        self.update()
+        with dpg.handler_registry():
+            dpg.add_mouse_wheel_handler(callback=self.on_scroll)
+
+    def on_scroll(self, sender, app_data):
+        if dpg.is_key_down(dpg.mvKey_LControl):
+            self.scale *= exp(app_data / 8)
+            self.update()
+
+    def update(self):
+        dpg.set_global_font_scale(self.scale / 4)
+
 
 class App:
     def __init__(self, font_scale: float = 1.0):
         dpg.create_context()
-        from importlib.resources import files
 
-        font_path = files("assets_tool.assets").joinpath("fonts/ARIAL.TTF")
-        max_height = 600
-        for i in screeninfo.get_monitors():
-            if i.height > max_height:
-                max_height = i.height
-        with dpg.font_registry():
-            with as_file(font_path) as path:
-                default_font = dpg.add_font(
-                    str(path), ceil(max_height * 0.012 * font_scale)
-                )
-                dpg.bind_font(default_font)
         with dpg.theme() as self.selected_theme:
             with dpg.theme_component(dpg.mvButton):
                 dpg.add_theme_color(
@@ -1850,6 +1865,7 @@ class App:
                 dpg.add_theme_color(
                     dpg.mvThemeCol_Button, (120, 90, 30), category=dpg.mvThemeCat_Core
                 )
+        self.font_util = FontUtil(font_scale)
         self.ui = UI()
         self.properties = PropertiesUI(
             lambda: self.file_explorer.stage,
