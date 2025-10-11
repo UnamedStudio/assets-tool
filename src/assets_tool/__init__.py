@@ -135,15 +135,15 @@ class TreeUI:
     def node(
         self,
         label: str,
-        callback: Callable[[], None],
-        parent: Node | None,
+        callback: Callable[[], None] | None = None,
+        parent: Node | None = None,
         on_first_open: Callable[[], None] | None = None,
     ) -> Node:
         parent_ui = parent.children_ui if parent else self.children_ui
         with dpg.group(parent=parent_ui) as root_ui:
             with dpg.group(horizontal=True) as group_ui:
                 fold_button = dpg.add_button(label=self.open_label)
-                button_ui = dpg.add_button(label=label, callback=callback)
+                button_ui = dpg.add_button(label=label, callback=callback)  # type: ignore
             children_ui = dpg.add_child_window(show=False, auto_resize_y=True)
         ret = self.Node(
             False, fold_button, button_ui, children_ui, root_ui, group_ui, on_first_open
@@ -311,7 +311,7 @@ class FileExplorer:
                             relativize_sublayers(current_path, root_layer)
                         root_layer_path = current_path if if_replace else path
                         overwrite(root_layer, root_layer_path)
-                        self.add_path_ui(path)
+                        self.on_add_path(path)
                     case _:
                         raise Exception()
             else:
@@ -432,16 +432,16 @@ class FileExplorer:
             else "",
         )
 
-    def add_path_ui(self, path: Path):
+    def on_add_path(self, path: Path):
         if node := self.path2node.get(path.parent):
-            self.add_path_ui_raw(path, node)
+            self.on_add_path_raw(path, node)
         elif (
             self.opened_directory_path is not None
             and path.parent.resolve() == self.opened_directory_path.resolve()
         ):
-            self.add_path_ui_raw(path, None)
+            self.on_add_path_raw(path, None)
 
-    def add_path_ui_raw(self, path: Path, parent: TreeUI.Node | None = None):
+    def on_add_path_raw(self, path: Path, parent: TreeUI.Node | None = None):
         raw_parent = parent.children_ui if parent else self.tree_ui.children_ui
 
         def on_select():
@@ -457,7 +457,7 @@ class FileExplorer:
             )
 
             def on_first_open():
-                self.add_paths_ui(path, node)
+                self.on_add_paths(path, node)
 
             node.on_first_open = on_first_open
 
@@ -478,9 +478,9 @@ class FileExplorer:
         if button:
             self.path2button[path] = button
 
-    def add_paths_ui(self, path: Path, parent: TreeUI.Node | None = None):
+    def on_add_paths(self, path: Path, parent: TreeUI.Node | None = None):
         for child in sorted(path.iterdir()):
-            self.add_path_ui_raw(child, parent)
+            self.on_add_path_raw(child, parent)
 
     def load_path(
         self,
@@ -504,7 +504,7 @@ class FileExplorer:
                     callback=self.load_path(path.parent),
                     parent=self.tree_ui.children_ui,
                 )
-                self.add_paths_ui(path)
+                self.on_add_paths(path)
             elif path.is_file():
                 self.selected_file_path = path
                 self.stage = None
@@ -643,16 +643,19 @@ class PropertiesUI:
     def __init__(
         self,
         get_stage: Callable[[], Stage | None],
+        get_selected_file_path: Callable[[], Path | None],
         get_selection: Callable[[], SelectionUI.Selection],
         select_type: Callable[[str], None],
         select_api: Callable[[str], None],
         parent: int | str = 0,
     ) -> None:
         self.get_stage = get_stage
+        self.get_selected_file_path = get_selected_file_path
         self.get_selection = get_selection
         self.select_type = select_type
         self.select_api = select_api
         self.editing_prim: Prim | None = None
+        self.meta_data_ui = TreeUI(parent=parent)
         self.type_ui = TreeUI(parent=parent, label="type")
         self.api_ui = TreeUI(parent=parent, label="api")
         self.none_apply_api_ui = TreeUI(parent=parent, label="none apply api")
@@ -664,12 +667,28 @@ class PropertiesUI:
 
     def select_prim(self, prim: Prim | None):
         self.editing_prim = prim
+        self.meta_data_ui.clear()
         self.type_ui.clear()
         self.api_ui.clear()
         self.none_apply_api_ui.clear()
         self.other_ui.clear()
         if not prim:
             return
+
+        specs = prim.GetPrimStack()
+
+        meta_data_ui = self.meta_data_ui.node("meta data")
+        with dpg.group(parent=meta_data_ui.children_ui):
+            dpg.add_text("reference")
+            with dpg.child_window(auto_resize_y=True):
+                for spec in specs:
+                    path = spec.layer.identifier
+                    if selected_file_path := self.get_selected_file_path():
+                        path = os.path.relpath(
+                            spec.layer.identifier, selected_file_path.resolve()
+                        )
+                    dpg.add_text(path)
+
         raw_property_names = set(prim.GetPropertyNames())
 
         def add_schema_ui(
@@ -1874,6 +1893,7 @@ class App:
         self.ui = UI()
         self.properties = PropertiesUI(
             lambda: self.file_explorer.stage,
+            lambda: self.file_explorer.selected_file_path,
             lambda: self.selection_ui.selection,
             lambda name: self.schema_util.select_type(name),
             lambda name: self.schema_util.select_api(name),
