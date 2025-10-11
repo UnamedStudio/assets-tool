@@ -1058,6 +1058,7 @@ class SelectionUI:
                             root_layer, sub_layer_rel_path
                         )
                         refereced_path.add(Path(sub_layer_path).resolve())
+                    del stage
 
             for path in paths:
                 if not operation_name_filter and path in refereced_path:
@@ -1078,8 +1079,12 @@ class SelectionUI:
                         continue
                     elif operation_name_filter != operation_name:
                         continue
-                stage = self.context.load_stage(path)
-                self.dirty_stage[path] = stage
+                del stage
+                if stage := self.dirty_stage.get(path):
+                    ...
+                else:
+                    stage = self.context.load_stage(path)
+                    self.dirty_stage[path] = stage
                 yield path, stage, stage.Traverse()
 
     def __init__(
