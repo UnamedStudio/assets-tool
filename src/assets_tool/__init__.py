@@ -212,6 +212,8 @@ class FileExplorer:
 
     def save(self):
         def save_stage(stage: Stage, current_path: Path) -> None:
+            if current_path not in selection.dirty_stage:
+                return
             root_layer = stage.GetRootLayer()
             stem = current_path.stem
             operation_name = dpg.get_value(self.operation_name_ui)
@@ -527,7 +529,9 @@ class FileExplorer:
     def load_stage(self, path: Path) -> Stage:
         selection = self.get_selection()
         if prev_stage := selection.dirty_stage.get(path):
-            anonymous = prev_stage.GetRootLayer().anonymous
+            anonymous = Layer.IsAnonymousLayerIdentifier(
+                prev_stage.GetRootLayer().identifier
+            )
         match dpg.get_value(self.edit_mode_ui):
             case "update":
                 if prev_stage and not anonymous:  # type: ignore
@@ -535,7 +539,7 @@ class FileExplorer:
                 stage = Stage.Open(filePath=str(path))
             case "override" | "override replace":
                 if prev_stage and anonymous:  # type: ignore
-                    stage = prev_stage
+                    return prev_stage
                 root_layer = Layer.CreateAnonymous()
                 root_layer.subLayerPaths.append(str(path))
                 stage = Stage.Open(str(path))
