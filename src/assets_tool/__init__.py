@@ -328,6 +328,7 @@ class FileExplorer:
         else:
             for path, stage, _ in selection.stage_iter():
                 save_stage(stage, path)
+            self.load_path(None)()
 
     def update_operation_name_ui(self):
         match dpg.get_value(self.edit_mode_ui):
@@ -524,6 +525,9 @@ class FileExplorer:
         return ret
 
     def load_stage(self, path: Path) -> Stage:
+        selection = self.get_selection()
+        if stage := selection.dirty_stage.get(path):
+            return stage
         match dpg.get_value(self.edit_mode_ui):
             case "update":
                 stage = Stage.Open(str(path))
@@ -539,6 +543,7 @@ class FileExplorer:
                 SetStageUpAxis(stage, up_axis)
             case _:
                 raise Exception()
+        selection.dirty_stage[path] = stage
         return stage
 
 
@@ -1079,12 +1084,7 @@ class SelectionUI:
                         continue
                     elif operation_name_filter != operation_name:
                         continue
-                del stage
-                if stage := self.dirty_stage.get(path):
-                    ...
-                else:
-                    stage = self.context.load_stage(path)
-                    self.dirty_stage[path] = stage
+                stage = self.context.load_stage(path)
                 yield path, stage, stage.Traverse()
 
     def __init__(
