@@ -4,7 +4,7 @@ from collections.abc import Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from importlib.resources import as_file
-from math import ceil, exp
+from math import ceil, exp, exp2, log2
 import os
 from pathlib import Path
 from queue import Queue
@@ -1879,18 +1879,24 @@ class UI:
 class FontUtil:
     from importlib.resources import files
 
-    font_path = files("assets_tool.assets").joinpath("fonts/ARIAL.TTF")
+    font_path = files("assets_tool.assets").joinpath("fonts/FiraCode-Regular.ttf")
+    size_exp_range = (4, 8)
 
     def __init__(self, default_scale: float) -> None:
         self.scale = default_scale
-        self.max_height = 600
+        self.max_width = 600
+        self.fonts: list[int | str] = [0] * (
+            self.size_exp_range[1] - self.size_exp_range[0]
+        )
         with dpg.font_registry():
             with as_file(self.font_path) as path:
-                default_font = dpg.add_font(str(path), 128)
-                dpg.bind_font(default_font)
+                for i in range(*self.size_exp_range):
+                    self.fonts[i - self.size_exp_range[0]] = dpg.add_font(
+                        str(path), round(exp2(i))
+                    )
         for i in screeninfo.get_monitors():
-            if i.height > self.max_height:
-                self.max_height = i.height
+            if i.width > self.max_width:
+                self.max_width = i.width
         self.update()
         with dpg.handler_registry():
             dpg.add_mouse_wheel_handler(callback=self.on_scroll)
@@ -1901,7 +1907,20 @@ class FontUtil:
             self.update()
 
     def update(self):
-        dpg.set_global_font_scale(self.scale / 4)
+        scale = self.scale * self.max_width / 64
+        size_exp = log2(scale)
+        if size_exp > self.size_exp_range[1] - 1:
+            size_exp = self.size_exp_range[1] - 1
+        elif size_exp < self.size_exp_range[0]:
+            size_exp = self.size_exp_range[0]
+        size_exp = round(size_exp)
+        size_scale = exp2(size_exp)
+        scale = scale / size_scale
+        font = self.fonts[size_exp - self.size_exp_range[0]]
+        dpg.bind_font(font)
+        dpg.set_global_font_scale(scale)
+        for item in dpg.get_all_items():
+            dpg.bind_item_font(item, font)
 
 
 class App:
