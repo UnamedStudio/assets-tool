@@ -37,6 +37,7 @@ from pxr.UsdGeom import (
 )
 from pxr.Tf import Type as UsdType
 from pxr.Vt import IntArray, Vec3fArray
+from pxr.UsdPhysics import CollisionAPI
 
 import screeninfo
 import software_client
@@ -46,6 +47,7 @@ import software_client.command
 from assets_tool.utils import (
     Matrix4d,
     XformCache,
+    copy_api,
     copy_prim,
     from_usd_transform,
     is_attr_authored_in_layer,
@@ -571,7 +573,7 @@ class Hierarchy:
         self.select_prim = select_prim
         self.get_stage = get_stage
         self.get_selection = get_selection
-        self.on_remove_prim = on_remove_prim
+        self._on_remove_prim = on_remove_prim
         self.selected_theme = selected_theme
         self.guide_theme = guide_theme
         self.selected_and_guide_theme = selected_and_guide_theme
@@ -605,7 +607,7 @@ class Hierarchy:
         if defalt_open:
             self.tree_ui.toggle_open(node)
 
-    def add_prim(self, prim: Prim):
+    def on_add_prim(self, prim: Prim):
         if not prim:
             return
         if prim in self.prim2node:
@@ -614,10 +616,10 @@ class Hierarchy:
             if not node.on_first_open:
                 self.add_prim_raw(prim, node)
         else:
-            self.add_prim(prim.GetParent())
+            self.on_add_prim(prim.GetParent())
 
-    def remove_prim(self, prim: Prim):
-        for callback in self.on_remove_prim:
+    def on_remove_prim(self, prim: Prim):
+        for callback in self._on_remove_prim:
             callback(prim)
         if node := self.prim2node.pop(prim, None):
             dpg.delete_item(node.root_ui)
@@ -1382,6 +1384,7 @@ class BlenderClient:
         container: int | str,
         get_selection: Callable[[], SelectionUI.Selection],
         get_stage: Callable[[], Stage | None],
+        on_add_prim: Callable[[Prim], None],
         mut_on_tick: list[Callable[[], None]],
         mut_on_end: list[Callable[[], None]],
     ) -> None:
@@ -1401,6 +1404,7 @@ class BlenderClient:
         self.container = container
         self.get_selection = get_selection
         self.get_stage = get_stage
+        self.on_add_prim = on_add_prim
         with dpg.child_window(auto_resize_y=True, parent=self.container):
             dpg.add_text("Blender Client")
             self.port_input = dpg.add_input_int(label="port", default_value=8888)
@@ -1415,6 +1419,9 @@ class BlenderClient:
                 )
                 self.if_sync_xform_ui = dpg.add_checkbox(
                     label="xform", default_value=True
+                )
+                self.if_protect_visual = dpg.add_checkbox(
+                    label="protect visual", default_value=True
                 )
             self.sync_ui = dpg.add_button(label="sync", callback=self.sync)
         self.synced: BlenderClient.Synced | None = None
@@ -1540,6 +1547,24 @@ class BlenderClient:
                 assert stage
                 prim = stage.GetPrimAtPath(path.as_posix())
                 mesh = Mesh(prim)
+                if mesh.GetPurposeAttr().Get() != "guide" and dpg.get_value(
+                    self.if_protect_visual
+                ):  # type: ignore
+                    if not prim.HasAPI(CollisionAPI):  # type: ignore
+                        return
+                    new_mesh = Mesh.Define(
+                        stage,
+                        unique_usd_path(
+                            UsdPath((path / "protect_visual").as_posix()), stage
+                        ),
+                    )
+                    new_prim = new_mesh.GetPrim()
+                    CollisionAPI.Apply(new_prim)
+                    copy_api(prim, new_prim, "PhysicsCollisionAPI")
+                    prim.RemoveAPI(CollisionAPI)  # type: ignore
+                    prim = new_prim
+                    mesh = Mesh(prim)
+                    mesh.GetPurposeAttr().Set("guide")
                 mesh.GetPointsAttr().Set(Vec3fArray.FromNumpy(positions))
                 mesh.GetFaceVertexIndicesAttr().Set(IntArray.FromNumpy(indices))
                 mesh.GetFaceVertexCountsAttr().Set(
@@ -1549,6 +1574,7 @@ class BlenderClient:
                 mesh.GetExtentAttr().Block()
                 for primvar in PrimvarsAPI(prim).GetPrimvars():
                     primvar.GetAttr().Block()
+                self.on_add_prim(prim)
 
         self.tasks.put(run)
 
@@ -1938,7 +1964,7 @@ class App:
             ],
             [],
             lambda: self.file_explorer.stage,
-            self.hierarchy.add_prim,
+            self.hierarchy.on_add_prim,
             self.file_explorer.load_stage,
             parent=self.ui.operators,
         )
@@ -1946,6 +1972,7 @@ class App:
             self.ui.operators,
             lambda: self.selection_ui.selection,
             lambda: self.file_explorer.stage,
+            self.hierarchy.on_add_prim,
             self.ui.on_tick,
             self.ui.on_end,
         )
@@ -1953,8 +1980,8 @@ class App:
             self.ui.operators,
             lambda: self.file_explorer.stage,
             lambda: self.selection_ui.selection,
-            self.hierarchy.add_prim,
-            self.hierarchy.remove_prim,
+            self.hierarchy.on_add_prim,
+            self.hierarchy.on_remove_prim,
         )
         self.schema_util = SchemaUtil(
             self.ui.operators,
