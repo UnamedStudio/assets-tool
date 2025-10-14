@@ -7,6 +7,7 @@ from importlib.resources import as_file
 from math import ceil, exp, exp2, log2
 import os
 from pathlib import Path
+from pprint import pprint
 from queue import Queue
 import select
 from time import sleep
@@ -53,6 +54,7 @@ from assets_tool.utils import (
     XformCache,
     copy_api,
     copy_prim,
+    find_usd_dependencies,
     from_usd_transform,
     is_attr_authored_in_layer,
     is_prim_authored_in_layer,
@@ -179,6 +181,7 @@ class FileExplorer:
     class LoadedStage:
         stage: Ref[Stage]
         dirty: bool
+
     def __init__(
         self,
         parent: int | str,
@@ -539,40 +542,40 @@ class FileExplorer:
         self,
         path: Path | None,
     ):
-            if not path:
-                self.selected_file_path = path
-                self.stage = None
-                self.update_operation_stack_ui()
-                for callback in self.select_stage:
-                    callback(path)
-            elif path.is_dir():
-                self.opened_directory_path = path
-                self.path2button.clear()
-                self.themed_uis.clear()
-                self.path2node.clear()
-                self.tree_ui.clear()
-                dpg.add_button(
-                    label="..",
-                    callback=Scope(self.load_path)(path.parent),
-                    parent=self.tree_ui.children_ui,
-                )
-                self.on_add_paths(path)
-            elif path.is_file():
-                self.selected_file_path = path
-                self.stage = None
-                self.update_operation_stack_ui()
-                match path.suffix:
-                    case ".usd" | ".usda" | ".usdc":
-                        self.update_operation_name_ui()
-                        self.stage = self.load_stage(self.selected_file_path)
+        if not path:
+            self.selected_file_path = path
+            self.stage = None
+            self.update_operation_stack_ui()
+            for callback in self.select_stage:
+                callback(path)
+        elif path.is_dir():
+            self.opened_directory_path = path
+            self.path2button.clear()
+            self.themed_uis.clear()
+            self.path2node.clear()
+            self.tree_ui.clear()
+            dpg.add_button(
+                label="..",
+                callback=Scope(self.load_path)(path.parent),
+                parent=self.tree_ui.children_ui,
+            )
+            self.on_add_paths(path)
+        elif path.is_file():
+            self.selected_file_path = path
+            self.stage = None
+            self.update_operation_stack_ui()
+            match path.suffix:
+                case ".usd" | ".usda" | ".usdc":
+                    self.update_operation_name_ui()
+                    self.stage = self.load_stage(self.selected_file_path)
 
-                    case _:
-                        raise Exception(f"unsupported file {path}")
-                for callback in self.select_stage:
-                    callback(path)
-            else:
-                raise Exception()
-            self.update_opened_file_ui()
+                case _:
+                    raise Exception(f"unsupported file {path}")
+            for callback in self.select_stage:
+                callback(path)
+        else:
+            raise Exception()
+        self.update_opened_file_ui()
 
     def load_stage(self, path: Path) -> Stage:
         stage = None
@@ -1095,7 +1098,6 @@ class SelectionUI:
     class StageSelect:
         path: Path
         exclusive: bool
-        name_exclude: list[str]
 
     class Selection:
         def __init__(self, context: SelectionUI) -> None:
@@ -1132,29 +1134,20 @@ class SelectionUI:
                 elif path.is_file():
                     match path.suffix:
                         case ".usd" | ".usda" | ".usdc":
-                            path_str = path.as_posix().lower()
-                            if all(i not in path_str for i in select.name_exclude):
-                                paths.append(path.resolve())
+                            paths.append(path.resolve())
 
             for select in self.stage_selects.values():
                 if not select.exclusive:
                     collect_path(select.path, select)
 
             operation_name_filter = dpg.get_value(self.context.operation_name_filter_ui)
-            refereced_path = set[Path]()
+            dependent_paths = set[Path]()
             if not operation_name_filter:
                 for path in paths:
-                    stage = Stage.Open(str(path))
-                    root_layer = stage.GetRootLayer()
-                    for sub_layer_rel_path in root_layer.subLayerPaths:
-                        sub_layer_path = ComputeAssetPathRelativeToLayer(
-                            root_layer, sub_layer_rel_path
-                        )
-                        refereced_path.add(Path(sub_layer_path).resolve())
-                    del stage
-
+                    for dependent_path in find_usd_dependencies(path, False, False):
+                        dependent_paths.add(dependent_path)
             for path in paths:
-                if not operation_name_filter and path in refereced_path:
+                if not operation_name_filter and path in dependent_paths:
                     continue
                 stage = Stage.Open(str(path))
                 if operation_name_filter:
@@ -1227,9 +1220,13 @@ class SelectionUI:
 
         with dpg.child_window(auto_resize_y=True, parent=parent):
             dpg.add_text("Selection")
-            dpg.add_button(
-                label="test", callback=lambda: list(self.selection.stage_iter())
-            )
+
+            # def test():
+            #     for path, stage, prims in self.selection.stage_iter():
+            #         print(path)
+
+            # dpg.add_button(label="test", callback=test)
+
             self.mode_ui = dpg.add_combo(
                 ("single", "multi", "multi continuous", "guide"),
                 label="mode",
@@ -1442,7 +1439,6 @@ class SelectionUI:
                         self.selection.stage_selects[path] = self.StageSelect(
                             path,
                             dpg.get_value(self.exclusive_ui),
-                            ["materials", "_payload", "_geo", "_look"],
                         )
         for callback in self.on_stage_select:
             callback()
@@ -1964,6 +1960,7 @@ class UI:
         for callback in self.on_end:
             callback()
         dpg.destroy_context()
+
 
 class FontUtil:
     from importlib.resources import files

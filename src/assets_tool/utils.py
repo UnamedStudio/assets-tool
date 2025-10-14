@@ -7,7 +7,7 @@ from pxr.UsdGeom import XformCache, XformOp
 from numpy import array
 from numpy.typing import NDArray
 from pxr.Gf import Matrix4d, Quatd, Quatf, Quath, Transform
-from pxr.Sdf import Layer
+from pxr.Sdf import Layer, PrimSpec, ComputeAssetPathRelativeToLayer
 
 from weakref import ref as Weak
 
@@ -210,3 +210,64 @@ def overwrite(layer: Layer, path: Path):
     if overwrite:
         if layer := Layer.Find(str(path)):
             layer.Reload()
+
+
+def find_usd_dependencies(path: Path, recursive: bool, include_self: bool) -> set[Path]:
+    path = path.resolve()
+
+    visited_layers = set[Path]()
+    asset_files = set[Path]()
+
+    def find_in_layer(layer: Layer, recursive: bool):
+        for sublayer_path in layer.subLayerPaths:
+            resolved_path = ComputeAssetPathRelativeToLayer(layer, sublayer_path)
+            Layer.FindOrOpen(resolved_path)
+            if sublayer := Layer.FindOrOpen(resolved_path):
+                path = Path(sublayer.identifier).resolve()
+                if path not in visited_layers:
+                    visited_layers.add(path)
+                    if recursive:
+                        find_in_layer(sublayer, True)
+
+        for prim in layer.rootPrims:
+            find_in_prim(prim, layer, recursive)
+
+    def find_in_prim(prim: PrimSpec, layer: Layer, recursive: bool):
+        for ref in prim.referenceList.GetAppliedItems():
+            resolved_path = ComputeAssetPathRelativeToLayer(layer, ref.assetPath)
+            Layer.FindOrOpen(resolved_path)
+            if ref_layer := Layer.FindOrOpen(resolved_path):
+                path = Path(ref_layer.identifier).resolve()
+                if path not in visited_layers:
+                    visited_layers.add(path)
+                    if recursive:
+                        find_in_layer(ref_layer, True)
+
+        for payload in prim.payloadList.GetAppliedItems():
+            resolved_path = ComputeAssetPathRelativeToLayer(layer, payload.assetPath)
+            Layer.FindOrOpen(resolved_path)
+            if payload_layer := Layer.FindOrOpen(resolved_path):
+                path = Path(payload_layer.identifier).resolve()
+                if path not in visited_layers:
+                    visited_layers.add(path)
+                    if recursive:
+                        find_in_layer(payload_layer, True)
+
+        for attr in prim.attributes:
+            if attr.typeName == "asset":
+                if asset_path := attr.default:
+                    resolved_path = Path(
+                        ComputeAssetPathRelativeToLayer(layer, asset_path.path)
+                    ).resolve()
+                    if resolved_path and resolved_path.exists():
+                        asset_files.add(Path(resolved_path))
+
+        for child in prim.nameChildren:
+            find_in_prim(child, layer, recursive)
+
+    root_layer = Layer.FindOrOpen(str(path))
+    if include_self:
+        visited_layers.add(path)
+    find_in_layer(root_layer, recursive)
+
+    return visited_layers.union(asset_files)
