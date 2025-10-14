@@ -7,8 +7,8 @@ dependencies = [
     "dearpygui>=2.1.0",
     "usd-core>=25.8",
     "types-usd>=24.5.2",
-    "numpy>=2.3.2",
-    "software-client @ git+https://github.com/UnamedStudio/software-server.git@main#subdirectory=client",
+    "numpy>=2.3.3",
+    "software-client @ git+https://github.com/UnamedStudio/software-server.git@dev#subdirectory=client",
     "screeninfo>=0.8.1",
 ]
 requires-python = "==3.12.*"

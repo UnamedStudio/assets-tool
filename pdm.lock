@@ -5,7 +5,7 @@
 groups = ["default"]
 strategy = ["inherit_metadata"]
 lock_version = "4.5.0"
-content_hash = "sha256:dbecf32dbde25d420f3d2b0ad78d3fa6e35456414483b9307391340472c7c819"
+content_hash = "sha256:3181959eed4038a108ddfdcefeb48385fbaf95147f3b05fc590e5083ac199ebb"
 
 [[metadata.targets]]
 requires_python = "==3.12.*"
@@ -115,8 +115,8 @@ version = "0.1.0"
 requires_python = ">=3.11"
 subdirectory = "client"
 git = "https://github.com/UnamedStudio/software-server.git"
-ref = "main"
-revision = "ce6d2aeb6e852fc521fe58f0edf4d84abd768c35"
+ref = "dev"
+revision = "b67d88ce81f43b3c6cdd1deacf11265c2a1cf5ee"
 summary = "Default template for PDM package"
 groups = ["default"]
 dependencies = [

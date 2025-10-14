@@ -1,5 +1,7 @@
+from collections.abc import Callable
 import os
 from pathlib import Path
+from typing import Generic, ParamSpec, TypeVar
 from pxr.Usd import Prim, Attribute
 from pxr.UsdGeom import XformCache, XformOp
 from numpy import array
@@ -7,7 +9,45 @@ from numpy.typing import NDArray
 from pxr.Gf import Matrix4d, Quatd, Quatf, Quath, Transform
 from pxr.Sdf import Layer
 
+from weakref import ref as Weak
+
 from assets_tool import Relationship, SchemaRegistry, Stage, UsdPath
+
+
+class Ref[T]:
+    def __init__(self, value: T) -> None:
+        self.weak = Weak(value)
+        self.strong = None
+
+    def make_strong(self, strong: bool):
+        if strong:
+            self.strong = self.weak()
+        else:
+            self.strong = None
+
+    def __call__(self) -> T | None:
+        return self.weak()
+
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+class Lazy(Generic[P, R]):
+    def __init__(self, fn: Callable[[], Callable[P, R]]) -> None:
+        self.fn = fn
+
+    def __call__(self, *args: P.args, **kwds: P.kwargs) -> R:
+        return self.fn()(*args, **kwds)
+
+
+class Scope(Generic[P, R]):
+    def __init__(self, fn: Callable[P, R]) -> None:
+        self.fn = fn
+
+    def __call__(self, *args: P.args, **kwds: P.kwargs) -> Callable[[], R]:
+        return lambda: self.fn(*args, **kwds)
+
 
 registry = SchemaRegistry()
 

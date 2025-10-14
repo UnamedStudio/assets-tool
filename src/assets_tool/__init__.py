@@ -8,6 +8,7 @@ from math import ceil, exp, exp2, log2
 import os
 from pathlib import Path
 from queue import Queue
+import select
 from time import sleep
 from typing import Any
 import dearpygui.dearpygui as dpg
@@ -45,7 +46,10 @@ from software_client import Client, RunCommands
 import software_client.command
 
 from assets_tool.utils import (
+    Lazy,
     Matrix4d,
+    Ref,
+    Scope,
     XformCache,
     copy_api,
     copy_prim,
@@ -171,6 +175,10 @@ class TreeUI:
 
 
 class FileExplorer:
+    @dataclass
+    class LoadedStage:
+        stage: Ref[Stage]
+        dirty: bool
     def __init__(
         self,
         parent: int | str,
@@ -189,6 +197,8 @@ class FileExplorer:
 
         self.selected_file_path: Path | None = None
         self.opened_directory_path: Path | None = None
+        self.editing_stages = dict[Path, FileExplorer.LoadedStage]()
+
         self.opened_file_ui = dpg.add_text(parent=parent)
         self.path2button = dict[Path, int | str]()
         self.path2node = dict[Path, TreeUI.Node]()
@@ -210,11 +220,43 @@ class FileExplorer:
         self.operation_stack_ui = dpg.add_tree_node(
             label="operation stack", parent=parent
         )
+        self.editing_stages_ui = dpg.add_tree_node(
+            label="editing stages", parent=parent
+        )
         self.tree_ui = TreeUI(parent=parent)
+
+    def update_editing_stages_ui(self):
+        if not self.opened_directory_path:
+            return
+        dpg.delete_item(self.editing_stages_ui, children_only=True)
+        droppeds = set[Path]()
+        for path, editing_stage in self.editing_stages.items():
+            if stage := editing_stage.stage():
+
+                def callback(path: Path):
+                    self.load_path(path)
+
+                dpg.add_button(
+                    label=("*" if editing_stage.dirty else "")
+                    + os.path.relpath(path.resolve(), self.opened_directory_path),
+                    callback=Scope(callback)(path),
+                    parent=self.editing_stages_ui,
+                )
+            else:
+                droppeds.add(path)
+        for dropped in droppeds:
+            self.editing_stages.pop(dropped)
+
+    def make_dirty(self, path: Path, dirty=True):
+        editing_stage = self.editing_stages[path]
+        editing_stage.dirty = dirty
+        editing_stage.stage.make_strong(dirty)
+
+        self.update_editing_stages_ui()
 
     def save(self):
         def save_stage(stage: Stage, current_path: Path) -> None:
-            if current_path not in selection.dirty_stage:
+            if not self.editing_stages[current_path].dirty:
                 return
             root_layer = stage.GetRootLayer()
             stem = current_path.stem
@@ -301,7 +343,6 @@ class FileExplorer:
                             str(current_path.parent.resolve()),
                         )
                         operation_custom_data["operation"] = operation_name
-                        print(operation_name)
                         custom_layer_data["assets_tool:operation"] = (
                             operation_custom_data
                         )
@@ -320,7 +361,8 @@ class FileExplorer:
                         raise Exception()
             else:
                 assert root_layer.Save()
-            selection.dirty_stage.pop(current_path, None)
+            self.editing_stages.pop(current_path, None)
+            self.update_editing_stages_ui()
             del stage
 
         selection = self.get_selection()
@@ -328,11 +370,11 @@ class FileExplorer:
             if self.stage:
                 assert self.selected_file_path
                 save_stage(self.stage, self.selected_file_path)
-                self.load_path(None)()
+                self.load_path(None)
         else:
             for path, stage, _ in selection.stage_iter():
                 save_stage(stage, path)
-            self.load_path(None)()
+            self.load_path(None)
 
     def update_operation_name_ui(self):
         match dpg.get_value(self.edit_mode_ui):
@@ -385,7 +427,7 @@ class FileExplorer:
                     dpg.add_text(" ")
                     dpg.add_button(
                         label=operation_name,
-                        callback=self.load_path(path),
+                        callback=Scope(self.load_path)(path),
                     )
 
             operation_name = metadata["operation"]
@@ -399,7 +441,10 @@ class FileExplorer:
                 operation_name = metadata_iter["operation"]
                 with dpg.group(horizontal=True, parent=self.operation_stack_ui):
                     dpg.add_text(" ")
-                    dpg.add_button(label=operation_name, callback=self.load_path(path))
+                    dpg.add_button(
+                        label=operation_name,
+                        callback=Scope(self.load_path)(path),
+                    )
 
     def reload_file(self):
         if self.selected_file_path:
@@ -446,6 +491,8 @@ class FileExplorer:
             self.on_add_path_raw(path, None)
 
     def on_add_path_raw(self, path: Path, parent: TreeUI.Node | None = None):
+        if parent and parent.on_first_open:
+            return
         raw_parent = parent.children_ui if parent else self.tree_ui.children_ui
 
         def on_select():
@@ -456,7 +503,7 @@ class FileExplorer:
         if path.is_dir():
             node = self.tree_ui.node(
                 path.name,
-                self.load_path(path),
+                Scope(self.load_path)(path),
                 parent,
             )
 
@@ -476,7 +523,9 @@ class FileExplorer:
         elif path.is_file():
             with dpg.group(horizontal=True, parent=raw_parent):
                 dpg.add_button(label=" ", callback=on_select)
-                button = dpg.add_button(label=path.name, callback=self.load_path(path))
+                button = dpg.add_button(
+                    label=path.name, callback=Scope(self.load_path)(path)
+                )
         else:
             button = None
         if button:
@@ -490,7 +539,6 @@ class FileExplorer:
         self,
         path: Path | None,
     ):
-        def ret():
             if not path:
                 self.selected_file_path = path
                 self.stage = None
@@ -505,7 +553,7 @@ class FileExplorer:
                 self.tree_ui.clear()
                 dpg.add_button(
                     label="..",
-                    callback=self.load_path(path.parent),
+                    callback=Scope(self.load_path)(path.parent),
                     parent=self.tree_ui.children_ui,
                 )
                 self.on_add_paths(path)
@@ -526,22 +574,21 @@ class FileExplorer:
                 raise Exception()
             self.update_opened_file_ui()
 
-        return ret
-
     def load_stage(self, path: Path) -> Stage:
-        selection = self.get_selection()
-        if prev_stage := selection.dirty_stage.get(path):
-            anonymous = Layer.IsAnonymousLayerIdentifier(
-                prev_stage.GetRootLayer().identifier
-            )
+        stage = None
+        if prev_stage := self.editing_stages.get(path):
+            if stage := prev_stage.stage():
+                anonymous = Layer.IsAnonymousLayerIdentifier(
+                    stage.GetRootLayer().identifier
+                )
         match dpg.get_value(self.edit_mode_ui):
             case "update":
-                if prev_stage and not anonymous:  # type: ignore
-                    return prev_stage
+                if stage and not anonymous:  # type: ignore
+                    return stage
                 stage = Stage.Open(filePath=str(path))
             case "override" | "override replace":
-                if prev_stage and anonymous:  # type: ignore
-                    return prev_stage
+                if stage and anonymous:  # type: ignore
+                    return stage
                 root_layer = Layer.CreateAnonymous()
                 root_layer.subLayerPaths.append(str(path))
                 stage = Stage.Open(str(path))
@@ -553,7 +600,8 @@ class FileExplorer:
                 SetStageUpAxis(stage, up_axis)
             case _:
                 raise Exception()
-        selection.dirty_stage[path] = stage
+        self.editing_stages[path] = self.LoadedStage(Ref(stage), False)
+        self.update_editing_stages_ui()
         return stage
 
 
@@ -655,6 +703,7 @@ class PropertiesUI:
         get_stage: Callable[[], Stage | None],
         get_selected_file_path: Callable[[], Path | None],
         get_selection: Callable[[], SelectionUI.Selection],
+        make_dirty: Callable[[Path, bool]],
         select_type: Callable[[str], None],
         select_api: Callable[[str], None],
         parent: int | str = 0,
@@ -662,6 +711,7 @@ class PropertiesUI:
         self.get_stage = get_stage
         self.get_selected_file_path = get_selected_file_path
         self.get_selection = get_selection
+        self.make_dirty = make_dirty
         self.select_type = select_type
         self.select_api = select_api
         self.editing_prim: Prim | None = None
@@ -760,10 +810,14 @@ class PropertiesUI:
 
                 def get_selected_props() -> Iterable[Property]:
                     selection = self.get_selection()
-                    for selected in selection.iter():
-                        selected_prop = selected.GetProperty(prop.GetName())
-                        if selected_prop.IsValid():
-                            yield selected_prop
+                    for path, stage, prims in selection.stage_iter():
+                        has = False
+                        for prim in prims:
+                            if selected_prop := prim.GetProperty(prop.GetName()):
+                                has = True
+                                yield selected_prop
+                        if has:
+                            self.make_dirty(path, True)
 
                 def set_value(value):
                     for selected_prop in get_selected_props():
@@ -851,12 +905,17 @@ class PropertiesUI:
                             )
 
                 def on_toggle_authored(sender, app_data, user_data):
-                    if not app_data:
-                        for seleced_prop in get_selected_props():
-                            assert isinstance(seleced_prop, Attribute)
-                            seleced_prop.Clear()
+                    for selected_prop in get_selected_props():
+                        assert isinstance(selected_prop, Attribute)
+                        selected_prop.Clear()
                         is_blocked = is_attr_blocked(prop)
-                        dpg.set_value(blocked_ui, is_blocked)
+                        if not app_data:
+                            dpg.set_value(blocked_ui, is_blocked)
+                        else:
+                            if is_blocked:
+                                selected_prop.Block()
+                            else:
+                                selected_prop.Set(prop.Get())
                     if edit_ui:
                         dpg.configure_item(edit_ui, enabled=app_data)
                         if not app_data:
@@ -871,14 +930,13 @@ class PropertiesUI:
                 )
 
                 def on_toggle_blocked(sender, app_data, user_data):
-                    if app_data:
-                        for seleced_prop in get_selected_props():
-                            assert isinstance(seleced_prop, Attribute)
+                    for seleced_prop in get_selected_props():
+                        assert isinstance(seleced_prop, Attribute)
+                        if app_data:
                             seleced_prop.Block()
-                    if not app_data:
-                        for seleced_prop in get_selected_props():
-                            assert isinstance(seleced_prop, Attribute)
+                        else:
                             seleced_prop.Clear()
+
                     if edit_ui:
                         dpg.configure_item(edit_ui, enabled=not app_data)
                         dpg.set_value(edit_ui, prop.Get())
@@ -1045,7 +1103,6 @@ class SelectionUI:
             self.guide: Prim | None = None
             self.stage_selects = dict[Path, SelectionUI.StageSelect]()
             self.stage_guide: Path | None = None
-            self.dirty_stage = dict[Path, Stage]()
             self.context = context
 
         def iter(self) -> Iterable[Prim]:
@@ -1060,7 +1117,9 @@ class SelectionUI:
                         if prim not in excludes:
                             yield prim
 
-        def stage_iter(self) -> Iterable[tuple[Path, Stage, Iterable[Prim]]]:
+        def stage_iter(
+            self, auto_dirty_prim: bool = False, auto_dirty_stage: bool = False
+        ) -> Iterable[tuple[Path, Stage, Iterable[Prim]]]:
             paths = list[Path]()
 
             def collect_path(path: Path, select: SelectionUI.StageSelect):
@@ -1114,7 +1173,23 @@ class SelectionUI:
                     elif operation_name_filter != operation_name:
                         continue
                 stage = self.context.load_stage(path)
-                yield path, stage, stage.Traverse()
+                if auto_dirty_stage:
+                    self.context.make_dirty(path, True)
+
+                def prims():
+                    dirty = False
+                    for template_prim in self.iter():
+                        if prim := stage.GetPrimAtPath(template_prim.GetPath()):
+                            yield prim
+                            if not auto_dirty_stage and auto_dirty_prim and not dirty:
+                                dirty = True
+                                self.context.make_dirty(path, True)
+
+                yield (
+                    path,
+                    stage,
+                    prims() if len(self.selects) > 0 else stage.Traverse(),
+                )
 
     def __init__(
         self,
@@ -1122,7 +1197,8 @@ class SelectionUI:
         on_select: list[Callable[[], None]],
         on_stage_select: list[Callable[[], None]],
         get_stage: Callable[[], Stage | None],
-        add_prim: Callable[[Prim], None],
+        make_dirty: Callable[[Path, bool], None],
+        on_add_prim: Callable[[Prim], None],
         load_stage: Callable[[Path], Stage],
         parent: int | str = 0,
     ) -> None:
@@ -1131,7 +1207,8 @@ class SelectionUI:
         self.on_select = on_select
         self.on_stage_select = on_stage_select
         self.get_stage = get_stage
-        self.add_prim = add_prim
+        self.make_dirty = make_dirty
+        self.add_prim = on_add_prim
         self.load_stage = load_stage
         self.editing_select: Prim | None = None
 
@@ -1381,13 +1458,17 @@ class BlenderClient:
 
     def __init__(
         self,
-        container: int | str,
+        parent: int | str,
         get_selection: Callable[[], SelectionUI.Selection],
-        get_stage: Callable[[], Stage | None],
+        make_dirty: Callable[[Path, bool], None],
         on_add_prim: Callable[[Prim], None],
         mut_on_tick: list[Callable[[], None]],
         mut_on_end: list[Callable[[], None]],
     ) -> None:
+        self.get_selection = get_selection
+        self.make_dirty = make_dirty
+        self.on_add_prim = on_add_prim
+
         self.tasks = Queue[Callable[[], None]]()
         self.client = Client(
             lambda data: self.run_commands.run(data),
@@ -1401,11 +1482,7 @@ class BlenderClient:
             ),
             self.client,
         )
-        self.container = container
-        self.get_selection = get_selection
-        self.get_stage = get_stage
-        self.on_add_prim = on_add_prim
-        with dpg.child_window(auto_resize_y=True, parent=self.container):
+        with dpg.child_window(auto_resize_y=True, parent=parent):
             dpg.add_text("Blender Client")
             self.port_input = dpg.add_input_int(label="port", default_value=8888)
             with dpg.group(horizontal=True):
@@ -1457,94 +1534,105 @@ class BlenderClient:
     def sync(self):
         software_client.clear(self.client)
         selection = self.get_selection()
-        prims = set(selection.iter())
-        referenced_prims = set[Prim]()
-        for prim in prims:
-            ancestor = prim
-            while True:
-                if ancestor.IsPseudoRoot() or ancestor in referenced_prims:
-                    break
-                referenced_prims.add(ancestor)
-                ancestor = ancestor.GetParent()
-        stage = self.get_stage()
-        xform_cache = XformCache()
-        assert stage and xform_cache
         self.synced = self.Synced()
+        xform_cache = XformCache()
         command_count = 0
-        for prim in referenced_prims:
-            in_selection = prim in prims
-            path = Path(str(prim.GetPath()))
-            if in_selection:
-                if prim.IsA(Mesh):  # type: ignore
-                    mesh = Mesh(prim)
-                    synced_mesh = BlenderClient.SyncedMesh()
-                    self.synced.meshes[path] = synced_mesh
-                    if face_vertex_counts_raw := mesh.GetFaceVertexCountsAttr().Get():
-                        face_vertex_counts = array(face_vertex_counts_raw)
-                        assert numpy.all(face_vertex_counts == 3)
+        for file_path, stage, prims in selection.stage_iter():
+            prims = set(prims)
+            referenced_prims = set[Prim]()
+            for prim in prims:
+                ancestor = prim
+                while True:
+                    if ancestor.IsPseudoRoot() or ancestor in referenced_prims:
+                        break
+                    referenced_prims.add(ancestor)
+                    ancestor = ancestor.GetParent()
 
-                    if positions_raw := mesh.GetPointsAttr().Get():
-                        positions = array(positions_raw)
-                    else:
-                        positions = array(((), ()))
+            for prim in referenced_prims:
+                in_selection = prim in prims
+                path = Path(str(prim.GetPath()))
+                if in_selection:
+                    if prim.IsA(Mesh):  # type: ignore
+                        mesh = Mesh(prim)
+                        synced_mesh = BlenderClient.SyncedMesh()
+                        self.synced.meshes[path] = synced_mesh
+                        if (
+                            face_vertex_counts_raw
+                            := mesh.GetFaceVertexCountsAttr().Get()
+                        ):
+                            face_vertex_counts = array(face_vertex_counts_raw)
+                            assert numpy.all(face_vertex_counts == 3)
 
-                    if indices_raw := mesh.GetFaceVertexIndicesAttr().Get():
-                        triangles = array(indices_raw).reshape(-1, 3)
-                    else:
-                        triangles = NDArray((0, 3), int32)
+                        if positions_raw := mesh.GetPointsAttr().Get():
+                            positions = array(positions_raw)
+                        else:
+                            positions = array(((), ()))
 
-                    software_client.create_mesh(
+                        if indices_raw := mesh.GetFaceVertexIndicesAttr().Get():
+                            triangles = array(indices_raw).reshape(-1, 3)
+                        else:
+                            triangles = NDArray((0, 3), int32)
+
+                        software_client.create_mesh(
+                            self.client,
+                            array(positions),
+                            array(triangles),
+                            path,
+                            file_path,
+                            dpg.get_value(self.if_sync_mesh_ui),
+                        )
+                        command_count += 4
+                    elif prim.IsA(Cube):  # type: ignore
+                        cube = Cube(prim)
+                        software_client.create_cube(
+                            self.client,
+                            cube.GetSizeAttr().Get(),
+                            path,
+                            file_path,
+                        )
+                    elif prim.IsA(Cylinder):  # type: ignore
+                        cylinder = Cylinder(prim)
+                        software_client.command.create_cylinder(
+                            self.client,
+                            cylinder.GetRadiusAttr().Get(),
+                            cylinder.GetHeightAttr().Get(),
+                            str(cylinder.GetAxisAttr().Get()),
+                            path,
+                            file_path,
+                        )
+
+                if prim.IsA(Xformable):  # type: ignore
+                    translation, rotation, scale = from_usd_transform(
+                        xform_cache.GetLocalTransformation(prim)[0]
+                    )
+                    software_client.set_xform(
                         self.client,
-                        array(positions),
-                        array(triangles),
+                        translation,
+                        rotation,
+                        scale,
                         path,
-                        dpg.get_value(self.if_sync_mesh_ui),
+                        file_path,
+                        in_selection and dpg.get_value(self.if_sync_xform_ui),
                     )
-                    command_count += 4
-                elif prim.IsA(Cube):  # type: ignore
-                    cube = Cube(prim)
-                    software_client.create_cube(
-                        self.client, cube.GetSizeAttr().Get(), path
-                    )
-                elif prim.IsA(Cylinder):  # type: ignore
-                    cylinder = Cylinder(prim)
-                    software_client.command.create_cylinder(
-                        self.client,
-                        cylinder.GetRadiusAttr().Get(),
-                        cylinder.GetHeightAttr().Get(),
-                        str(cylinder.GetAxisAttr().Get()),
-                        path,
-                    )
-
-            if prim.IsA(Xformable):  # type: ignore
-                translation, rotation, scale = from_usd_transform(
-                    xform_cache.GetLocalTransformation(prim)[0]
-                )
-                software_client.set_xform(
-                    self.client,
-                    translation,
-                    rotation,
-                    scale,
-                    path,
-                    in_selection and dpg.get_value(self.if_sync_xform_ui),
-                )
-                command_count += 1
-            if command_count >= 20:
-                sleep(0.1)
-                command_count -= 20
+                    command_count += 1
+                if command_count >= 20:
+                    sleep(0.1)
+                    command_count -= 20
 
     def sync_mesh(
         self,
         positions: NDArray[float32],
         indices: NDArray[int32],
         path: Path,
+        file_path: Path,
         guard: Any,
     ):
         def run():
             guard  # type: ignore
+            selection = self.get_selection()
             if self.synced:
-                stage = self.get_stage()
-                assert stage
+                stage = selection.context.load_stage(file_path)
+                self.make_dirty(file_path, True)
                 prim = stage.GetPrimAtPath(path.as_posix())
                 mesh = Mesh(prim)
                 if mesh.GetPurposeAttr().Get() != "guide" and dpg.get_value(
@@ -1584,11 +1672,13 @@ class BlenderClient:
         rotation: NDArray[float],
         scale: NDArray[float],
         path: Path,
+        file_path: Path,
     ):
         def run():
+            selection = self.get_selection()
             if self.synced:
-                stage = self.get_stage()
-                assert stage
+                stage = selection.context.load_stage(file_path)
+                self.make_dirty(file_path, True)
                 prim = stage.GetPrimAtPath(path.as_posix())
                 xform = Xformable(prim)
 
@@ -1623,19 +1713,16 @@ class BlenderClient:
 class PrimUtil:
     def __init__(
         self,
-        container: int | str,
-        get_stage: Callable[[], Stage | None],
+        parent: int | str,
         get_selection: Callable[[], SelectionUI.Selection],
         add_prim: Callable[[Prim], None],
         remove_prim: Callable[[Prim], None],
     ) -> None:
-        self.container = container
-        self.get_stage = get_stage
         self.get_selection = get_selection
         self.add_prim = add_prim
         self.remove_prim = remove_prim
         self.copied_prim: Prim | None = None
-        with dpg.child_window(auto_resize_y=True, parent=container):
+        with dpg.child_window(auto_resize_y=True, parent=parent):
             dpg.add_text("Prim Util")
             self.name_ui = dpg.add_input_text(label="name", default_value="new_prim")
             self.mode_ui = dpg.add_combo(
@@ -1647,9 +1734,7 @@ class PrimUtil:
                 dpg.add_button(label="copy", callback=self.copy_prim)
                 dpg.add_button(label="paste", callback=self.paste_prim)
 
-    def get_create_path(self, prim: Prim | None) -> UsdPath:
-        stage = self.get_stage()
-        assert stage
+    def get_create_path(self, stage: Stage, prim: Prim | None) -> UsdPath:
         if not prim:
             path = UsdPath("/")
         else:
@@ -1664,49 +1749,46 @@ class PrimUtil:
         return unique_usd_path(path, stage)
 
     def create_prim(self):
-        stage = self.get_stage()
-        assert stage
-        for prim in list(self.get_selection().iter()):
-            path = self.get_create_path(prim)
-            prim = stage.DefinePrim(path)
-            print(prim)
-            self.add_prim(prim)
+        selection = self.get_selection()
+        for path, stage, prims in selection.stage_iter(auto_dirty_prim=True):
+            for prim in list(prims):
+                usd_path = self.get_create_path(stage, prim)
+                prim = stage.DefinePrim(usd_path)
+                self.add_prim(prim)
 
     def delete_prim(self):
-        stage = self.get_stage()
-        assert stage
-        for prim in list(self.get_selection().iter()):
-            if prim:
-                self.remove_prim(prim)
-                path = prim.GetPath()
-                if is_prim_authored_in_layer(prim, stage.GetRootLayer()):
-                    stage.RemovePrim(path)
-                else:
-                    prim.SetActive(False)
+        selection = self.get_selection()
+        for path, stage, prims in selection.stage_iter(auto_dirty_prim=True):
+            for prim in list(prims):
+                if prim:
+                    self.remove_prim(prim)
+                    usd_path = prim.GetPath()
+                    if is_prim_authored_in_layer(prim, stage.GetRootLayer()):
+                        stage.RemovePrim(usd_path)
+                    else:
+                        prim.SetActive(False)
 
     def copy_prim(self):
         if prim := self.get_selection().guide:
             self.copied_prim = prim
 
     def paste_prim(self):
-        current_prim = self.get_selection().guide
-        if self.copied_prim and current_prim:
-            stage = self.get_stage()
-            assert stage
-            new_prim = copy_prim(
-                stage, self.copied_prim, self.get_create_path(current_prim), True
-            )
-            self.add_prim(new_prim)
+        if self.copied_prim:
+            selection = self.get_selection()
+            for path, stage, prims in selection.stage_iter(auto_dirty_prim=True):
+                for prim in list(prims):
+                    usd_path = self.get_create_path(stage, prim)
+                    prim = copy_prim(stage, self.copied_prim, usd_path, True)
+                    self.add_prim(prim)
 
 
 class SchemaUtil:
     def __init__(
         self,
-        container: int | str,
+        parent: int | str,
         get_selection: Callable[[], SelectionUI.Selection],
         on_schema_change: list[Callable[[Prim], None]],
     ) -> None:
-        self.container = container
         self.get_selection = get_selection
         self.on_add_schema = on_schema_change
 
@@ -1726,7 +1808,7 @@ class SchemaUtil:
         self.type_names = set(type_names)
         self.api_names = set(api_names)
 
-        with dpg.child_window(auto_resize_y=True, parent=container):
+        with dpg.child_window(auto_resize_y=True, parent=parent):
             dpg.add_text("Schema Util")
             with dpg.tree_node(label="type", default_open=True):
                 self.select_type_ui = dpg.add_combo(type_names, label="type")
@@ -1747,36 +1829,42 @@ class SchemaUtil:
             dpg.configure_item(self.select_api_ui, callback=select_api)
 
     def remove_api(self):
-        for prim in self.get_selection().iter():
-            if api_name := dpg.get_value(self.select_api_ui):
-                api = SchemaRegistry.GetTypeFromSchemaTypeName(api_name)
-                prim.RemoveAPI(api)
+        if api_name := dpg.get_value(self.select_api_ui):
+            selection = self.get_selection()
+            api = SchemaRegistry.GetTypeFromSchemaTypeName(api_name)
+            for path, stage, prims in selection.stage_iter(auto_dirty_prim=True):
+                for prim in prims:
+                    prim.RemoveAPI(api)
+                    for callback in self.on_add_schema:
+                        callback(prim)
+
+    def set_type(self):
+        selection = self.get_selection()
+        type_name = dpg.get_value(self.select_type_ui)
+        for path, stage, prims in selection.stage_iter(auto_dirty_prim=True):
+            for prim in prims:
+                if type_name == "None":
+                    prim.ClearTypeName()
+                else:
+                    prim.SetTypeName(type_name)
                 for callback in self.on_add_schema:
                     callback(prim)
 
-    def set_type(self):
-        for prim in self.get_selection().iter():
-            type_name = dpg.get_value(self.select_type_ui)
-            if type_name == "None":
-                prim.ClearTypeName()
-            else:
-                prim.SetTypeName(type_name)
-            for callback in self.on_add_schema:
-                callback(prim)
-
     def add_api(self):
-        for prim in self.get_selection().iter():
-            type = SchemaRegistry.GetTypeFromSchemaTypeName(
-                dpg.get_value(self.select_api_ui)
-            )
-            is_multi = SchemaRegistry.IsMultipleApplyAPISchema(type)
-            if not is_multi:
-                prim.ApplyAPI(type)
-            else:
-                instance_name = dpg.get_value(self.instance_name_ui)
-                prim.ApplyAPI(type, instance_name)
-            for callback in self.on_add_schema:
-                callback(prim)
+        selection = self.get_selection()
+        for path, stage, prims in selection.stage_iter(auto_dirty_prim=True):
+            for prim in prims:
+                type = SchemaRegistry.GetTypeFromSchemaTypeName(
+                    dpg.get_value(self.select_api_ui)
+                )
+                is_multi = SchemaRegistry.IsMultipleApplyAPISchema(type)
+                if not is_multi:
+                    prim.ApplyAPI(type)
+                else:
+                    instance_name = dpg.get_value(self.instance_name_ui)
+                    prim.ApplyAPI(type, instance_name)
+                for callback in self.on_add_schema:
+                    callback(prim)
 
     def select_type(self, name: str):
         if name in self.type_names:
@@ -1790,19 +1878,20 @@ class SchemaUtil:
 class LayerUtil:
     def __init__(
         self,
-        container: int | str,
-        get_stage: Callable[[], Stage | None],
+        parent: int | str,
+        get_selection: Callable[[], SelectionUI.Selection],
         on_clear: list[Callable[[], None]],
     ) -> None:
-        self.container = container
-        self.get_stage = get_stage
+        self.container = parent
+        self.get_selection = get_selection
         self.on_clear = on_clear
         with dpg.child_window(auto_resize_y=True, parent=self.container):
             dpg.add_text("Layer Util")
             dpg.add_button(label="clear", callback=self.clear)
 
     def clear(self):
-        if stage := self.get_stage():
+        selection = self.get_selection()
+        for path, stage, prims in selection.stage_iter(auto_dirty_stage=True):
             root_layer = stage.GetRootLayer()
             operation_metadata = root_layer.customLayerData.get("assets_tool:operation")
             default_prim = root_layer.defaultPrim
@@ -1948,6 +2037,7 @@ class App:
             lambda: self.file_explorer.stage,
             lambda: self.file_explorer.selected_file_path,
             lambda: self.selection_ui.selection,
+            lambda path, dirty: self.file_explorer.make_dirty(path, dirty),
             lambda name: self.schema_util.select_type(name),
             lambda name: self.schema_util.select_api(name),
             parent=self.ui.properties,
@@ -1983,6 +2073,7 @@ class App:
             ],
             [],
             lambda: self.file_explorer.stage,
+            Lazy(lambda: self.file_explorer.make_dirty),
             self.hierarchy.on_add_prim,
             self.file_explorer.load_stage,
             parent=self.ui.operators,
@@ -1990,14 +2081,13 @@ class App:
         self.blender_client = BlenderClient(
             self.ui.operators,
             lambda: self.selection_ui.selection,
-            lambda: self.file_explorer.stage,
+            self.file_explorer.make_dirty,
             self.hierarchy.on_add_prim,
             self.ui.on_tick,
             self.ui.on_end,
         )
         self.prim_util = PrimUtil(
             self.ui.operators,
-            lambda: self.file_explorer.stage,
             lambda: self.selection_ui.selection,
             self.hierarchy.on_add_prim,
             self.hierarchy.on_remove_prim,
@@ -2009,14 +2099,14 @@ class App:
         )
         self.layer_util = LayerUtil(
             self.ui.operators,
-            lambda: self.file_explorer.stage,
+            lambda: self.selection_ui.selection,
             [self.hierarchy.load_stage],
         )
         self.file_util = FileUtil(
             self.ui.operators,
             lambda: self.file_explorer.selected_file_path,
         )
-        self.file_explorer.load_path(Path(".").resolve())()
+        self.file_explorer.load_path(Path(".").resolve())
 
     def run(self):
         self.ui.run()
