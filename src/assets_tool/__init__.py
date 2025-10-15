@@ -1,5 +1,4 @@
 from __future__ import annotations
-from cProfile import label
 from collections.abc import Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass
@@ -9,7 +8,6 @@ import os
 from pathlib import Path
 from pprint import pprint
 from queue import Queue
-import select
 from time import sleep
 from typing import Any
 import dearpygui.dearpygui as dpg
@@ -166,9 +164,10 @@ class TreeUI:
             dpg.configure_item(node.fold_button, label=self.open_label)
         else:
             node.is_open = True
-            if node.on_first_open:
-                node.on_first_open()
+            on_first_open = node.on_first_open
+            if on_first_open:
                 node.on_first_open = None
+                on_first_open()
             dpg.configure_item(node.children_ui, show=True)
             dpg.configure_item(node.fold_button, label=self.close_label)
 
