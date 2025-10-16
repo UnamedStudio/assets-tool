@@ -1875,34 +1875,49 @@ class LayerUtil:
         self,
         parent: int | str,
         get_selection: Callable[[], SelectionUI.Selection],
+        make_dirty: Callable[[Path, bool], None],
         on_clear: list[Callable[[], None]],
     ) -> None:
         self.container = parent
         self.get_selection = get_selection
+        self.make_dirty = make_dirty
         self.on_clear = on_clear
         with dpg.child_window(auto_resize_y=True, parent=self.container):
             dpg.add_text("Layer Util")
-            dpg.add_button(label="clear", callback=self.clear)
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="clear", callback=lambda: self.clear(False))
+                dpg.add_button(label="reset", callback=lambda: self.clear(True))
 
-    def clear(self):
+    def clear(self, reset: bool):
         selection = self.get_selection()
-        for path, stage, prims in selection.stage_iter(auto_dirty_stage=True):
+        for path, stage, prims in selection.stage_iter():
             root_layer = stage.GetRootLayer()
-            operation_metadata = root_layer.customLayerData.get("assets_tool:operation")
-            default_prim = root_layer.defaultPrim
-            sublayers = list(root_layer.subLayerPaths)  # type: ignore
-            up_axis = GetStageUpAxis(stage)
-            root_layer.Clear()
-            if operation_metadata:
-                custom_layer_data = root_layer.customLayerData
-                custom_layer_data["assets_tool:operation"] = operation_metadata
-                root_layer.customLayerData = custom_layer_data
-            root_layer.defaultPrim = default_prim
-            for sublayer in sublayers:
-                root_layer.subLayerPaths.append(sublayer)
-            SetStageUpAxis(stage, up_axis)
+            dirty = False
+            if not root_layer.anonymous and reset:
+                root_layer.Reload()
+            else:
+                self.clear_raw(stage)
+                if not root_layer.anonymous:
+                    dirty = True
             for callback in self.on_clear:
                 callback()
+            self.make_dirty(path, dirty)
+
+    def clear_raw(self, stage: Stage):
+        root_layer = stage.GetRootLayer()
+        operation_metadata = root_layer.customLayerData.get("assets_tool:operation")
+        default_prim = root_layer.defaultPrim
+        sublayers = list(root_layer.subLayerPaths)  # type: ignore
+        up_axis = GetStageUpAxis(stage)
+        root_layer.Clear()
+        if operation_metadata:
+            custom_layer_data = root_layer.customLayerData
+            custom_layer_data["assets_tool:operation"] = operation_metadata
+            root_layer.customLayerData = custom_layer_data
+        root_layer.defaultPrim = default_prim
+        for sublayer in sublayers:
+            root_layer.subLayerPaths.append(sublayer)
+        SetStageUpAxis(stage, up_axis)
 
 
 class FileUtil:
@@ -2096,6 +2111,7 @@ class App:
         self.layer_util = LayerUtil(
             self.ui.operators,
             lambda: self.selection_ui.selection,
+            Lazy(lambda: self.file_explorer.make_dirty),
             [self.hierarchy.load_stage],
         )
         self.file_util = FileUtil(
