@@ -797,6 +797,8 @@ class PropertiesUI:
         elif isinstance(prop, Attribute):
             type_name = str(prop.GetTypeName())
             value = prop.Get()
+            if value is None:
+                return
             stage = self.get_stage()
             assert stage
 
@@ -809,6 +811,7 @@ class PropertiesUI:
                 blocked_ui = dpg.add_checkbox(default_value=is_blocked, enabled=False)
                 edit_ui = None
                 read_ui = None
+                into = lambda x: x
 
                 def get_selected_props() -> Iterable[Property]:
                     selection = self.get_selection()
@@ -855,20 +858,23 @@ class PropertiesUI:
                 else:
                     match type_name:
                         case "bool":
+                            into = bool
                             edit_ui = dpg.add_checkbox(
-                                default_value=value,
+                                default_value=into(value),
                                 enabled=is_authored,
                                 callback=on_edit,
                             )
                         case "int":
+                            into = int
                             edit_ui = dpg.add_input_int(
-                                default_value=value,
+                                default_value=into(value),
                                 callback=on_edit,
                                 enabled=is_authored,
                             )
                         case "float" | "double":
+                            into = float
                             edit_ui = dpg.add_input_float(
-                                default_value=value,
+                                default_value=into(value),
                                 callback=on_edit,
                                 enabled=is_authored,
                             )
@@ -921,10 +927,10 @@ class PropertiesUI:
                     if edit_ui:
                         dpg.configure_item(edit_ui, enabled=app_data)
                         if not app_data:
-                            dpg.set_value(edit_ui, prop.Get())
+                            dpg.set_value(edit_ui, into(prop.Get()))
                     if read_ui:
                         if not app_data:
-                            dpg.set_value(read_ui, prop.Get())
+                            dpg.set_value(read_ui, into(prop.Get()))
                     dpg.configure_item(blocked_ui, enabled=app_data)
 
                 dpg.configure_item(
@@ -941,7 +947,7 @@ class PropertiesUI:
 
                     if edit_ui:
                         dpg.configure_item(edit_ui, enabled=not app_data)
-                        dpg.set_value(edit_ui, prop.Get())
+                        dpg.set_value(edit_ui, into(prop.Get()))
                         dpg.configure_item(edit_ui, enabled=app_data)
 
                 dpg.configure_item(blocked_ui, callback=on_toggle_blocked)
