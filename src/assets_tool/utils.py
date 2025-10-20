@@ -167,8 +167,10 @@ def copy_prim(
             copy_prim(stage, child, child_dst_path, recursive)
     return dst_prim
 
-def copy_api(source: Prim, dest: Prim, api: str):
-    prim_def = registry.FindAppliedAPIPrimDefinition(api)
+def copy_schema(source: Prim, dest: Prim, schema: str):
+    prim_def = registry.FindAppliedAPIPrimDefinition(schema)
+    if not prim_def:
+        prim_def = registry.FindConcretePrimDefinition(schema)
     for name in prim_def.GetPropertyNames():
         prop = source.GetProperty(name)
         name = prop.GetName()

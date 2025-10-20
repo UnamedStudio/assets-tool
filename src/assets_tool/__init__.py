@@ -50,7 +50,7 @@ from assets_tool.utils import (
     Ref,
     Scope,
     XformCache,
-    copy_api,
+    copy_schema,
     copy_prim,
     find_usd_dependencies,
     from_usd_transform,
@@ -1649,7 +1649,7 @@ class BlenderClient:
                     )
                     new_prim = new_mesh.GetPrim()
                     CollisionAPI.Apply(new_prim)
-                    copy_api(prim, new_prim, "PhysicsCollisionAPI")
+                    copy_schema(prim, new_prim, "PhysicsCollisionAPI")
                     prim.RemoveAPI(CollisionAPI)  # type: ignore
                     prim = new_prim
                     mesh = Mesh(prim)
