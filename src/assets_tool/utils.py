@@ -11,7 +11,7 @@ from pxr.Sdf import Layer, PrimSpec, ComputeAssetPathRelativeToLayer
 
 from weakref import ref as Weak
 
-from assets_tool import Relationship, SchemaRegistry, Stage, UsdPath
+from assets_tool import Property, Relationship, SchemaRegistry, Stage, UsdPath
 
 
 class Ref[T]:
@@ -167,19 +167,29 @@ def copy_prim(
             copy_prim(stage, child, child_dst_path, recursive)
     return dst_prim
 
+def copy_attribute(source: Prim, dest: Prim, name: str, obj: Attribute | None = None):
+    if obj is None:
+        obj = source.GetAttribute(name)
+    if obj.HasAuthoredValue():
+        dst_attr = dest.CreateAttribute(name, typeName=obj.GetTypeName())
+        dst_attr.Set(obj.Get())
+        for k, v in obj.GetAllAuthoredMetadata().items():
+            dst_attr.SetMetadata(k, v)
+
+
 def copy_schema(source: Prim, dest: Prim, schema: str):
     prim_def = registry.FindAppliedAPIPrimDefinition(schema)
     if not prim_def:
         prim_def = registry.FindConcretePrimDefinition(schema)
     for name in prim_def.GetPropertyNames():
         prop = source.GetProperty(name)
-        name = prop.GetName()
         if isinstance(prop, Attribute):
-            if prop.HasAuthoredValue():
-                dst_attr = dest.CreateAttribute(name, typeName=prop.GetTypeName())
-                dst_attr.Set(prop.Get())
-                for k, v in prop.GetAllAuthoredMetadata().items():
-                    dst_attr.SetMetadata(k, v)
+            if name == "xformOpOrder":
+                xform_ops = prop.Get()
+                if xform_ops:
+                    for xform_op in xform_ops:
+                        copy_attribute(source, dest, str(xform_op))
+            copy_attribute(source, dest, name, prop)
         elif isinstance(prop, Relationship):
             if prop.HasAuthoredTargets():
                 dst_attr = dest.CreateRelationship(name)
@@ -236,6 +246,8 @@ def find_usd_dependencies(path: Path, recursive: bool, include_self: bool) -> se
 
     def find_in_prim(prim: PrimSpec, layer: Layer, recursive: bool):
         for ref in prim.referenceList.GetAppliedItems():
+            if ref.assetPath == "":
+                continue
             resolved_path = ComputeAssetPathRelativeToLayer(layer, ref.assetPath)
             Layer.FindOrOpen(resolved_path)
             if ref_layer := Layer.FindOrOpen(resolved_path):
@@ -246,6 +258,8 @@ def find_usd_dependencies(path: Path, recursive: bool, include_self: bool) -> se
                         find_in_layer(ref_layer, True)
 
         for payload in prim.payloadList.GetAppliedItems():
+            if payload.assetPath == "":
+                continue
             resolved_path = ComputeAssetPathRelativeToLayer(layer, payload.assetPath)
             Layer.FindOrOpen(resolved_path)
             if payload_layer := Layer.FindOrOpen(resolved_path):
