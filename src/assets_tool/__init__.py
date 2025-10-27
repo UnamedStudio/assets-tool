@@ -1034,42 +1034,44 @@ class SelectionUI:
             xform_cache: XformCache | None = None
             geometries: list[tuple[float, Matrix4d]] | None = None
 
-        def prepare_filter(self) -> PrepareFilter:
+        def prepare_filter(self, stage: Stage) -> PrepareFilter:
             xform_cache = None
             geometries = None
             if self.geomtry_filter:
-                xform_cache = XformCache()
-                geometries = []
+                if geomtry_filter := stage.GetPrimAtPath(self.geomtry_filter.GetPath()):
+                    xform_cache = XformCache()
+                    geometries = []
 
-                for geometry in PrimRange(self.geomtry_filter):
-                    if geometry.IsA(Cube):  # type: ignore
-                        cube = Cube(geometry)
-                        extent = abs(cube.GetSizeAttr().Get() / 2)
-                        world2local = xform_cache.GetLocalToWorldTransform(
-                            geometry
-                        ).GetInverse()
-                        geometries.append(
-                            (
-                                extent,
-                                world2local,
+                    for geometry in PrimRange(geomtry_filter):
+                        if geometry.IsA(Cube):  # type: ignore
+                            cube = Cube(geometry)
+                            extent = abs(cube.GetSizeAttr().Get() / 2)
+                            world2local = xform_cache.GetLocalToWorldTransform(
+                                geometry
+                            ).GetInverse()
+                            geometries.append(
+                                (
+                                    extent,
+                                    world2local,
+                                )
                             )
-                        )
             return self.PrepareFilter(xform_cache, geometries)
 
-        def iter(self) -> Iterable[Prim]:
-            prepare_filter = self.prepare_filter()
+        def iter(self, stage: Stage) -> Iterable[Prim]:
+            if prim := stage.GetPrimAtPath(self.prim.GetPath()):
+                prepare_filter = self.prepare_filter(stage)
 
-            def traverse_prim(prim: Prim) -> Iterable[Prim]:
-                if self.if_filter(prim, prepare_filter):
+                def traverse_prim(prim: Prim) -> Iterable[Prim]:
+                    if self.if_filter(prim, prepare_filter):
+                        yield prim
+                    child: Prim
+                    for child in prim.GetChildren():
+                        yield from traverse_prim(child)
+
+                if self.recursive:
+                    yield from traverse_prim(prim)
+                else:
                     yield prim
-                child: Prim
-                for child in prim.GetChildren():
-                    yield from traverse_prim(child)
-
-            if self.recursive:
-                yield from traverse_prim(self.prim)
-            else:
-                yield self.prim
 
         def if_filter(self, prim: Prim, prepare_filter: PrepareFilter) -> bool:
             if self.name_filter:
@@ -1112,15 +1114,15 @@ class SelectionUI:
             self.stage_guide: Path | None = None
             self.context = context
 
-        def iter(self) -> Iterable[Prim]:
+        def iter(self, stage: Stage) -> Iterable[Prim]:
             excludes = set[Prim]()
             for select in self.selects.values():
                 if select.exclusive:
-                    for prim in select.iter():
+                    for prim in select.iter(stage):
                         excludes.add(prim)
             for select in self.selects.values():
                 if not select.exclusive:
-                    for prim in select.iter():
+                    for prim in select.iter(stage):
                         if prim not in excludes:
                             yield prim
 
@@ -1176,12 +1178,11 @@ class SelectionUI:
 
                 def prims():
                     dirty = False
-                    for template_prim in self.iter():
-                        if prim := stage.GetPrimAtPath(template_prim.GetPath()):
-                            yield prim
-                            if not auto_dirty_stage and auto_dirty_prim and not dirty:
-                                dirty = True
-                                self.context.make_dirty(path, True)
+                    for prim in self.iter(stage):
+                        yield prim
+                        if not auto_dirty_stage and auto_dirty_prim and not dirty:
+                            dirty = True
+                            self.context.make_dirty(path, True)
 
                 yield (
                     path,
